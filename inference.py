@@ -82,7 +82,7 @@ def build_model(data):
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         steps3 = pm.step_methods.HamiltonianMC(vars=[betas,betas2,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        trace = pm.sample(200,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
+        trace = pm.sample(4000,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
 
     return bc_model,trace
 
@@ -100,8 +100,14 @@ def plot_hard_clustering(model,trace,data):
 
     dim = data.shape[1]
 
+    def cluster_plot(x,y,**kwargs):
+        sns.set_style('whitegrid')
+        sns.plt.ylim(0,1)
+        sns.plt.xlim(0,1)
+        plt.scatter(x,y,**kwargs)
+
     g = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
-    g.map_offdiag(plt.scatter)
+    g.map_offdiag(cluster_plot)
     plt.show()
 
 def plot_ppd(model,trace,data):

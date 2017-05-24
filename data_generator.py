@@ -2,7 +2,7 @@
 import numpy as np
 import numpy.random as rnd
 import matplotlib.pyplot as plt
-DIM = 2
+DIM = 4
 N  = 100
 MAX_AXIS_CLUSTERS = 5
 MAX_CLUSTERS = 20
@@ -31,8 +31,8 @@ def generate_data():
         cluster_locations[:,dim] = axis_cluster_locations[dim,cluster_indicies]
 
     data_expectations = np.zeros((N,DIM))
+    location_indicies = rnd.choice(np.arange(MAX_CLUSTERS),N,p=cluster_magnitudes)
     for dim in range(DIM): 
-        location_indicies = rnd.choice(np.arange(MAX_CLUSTERS),N,p=cluster_magnitudes)
         data_expectations[:,dim] = cluster_locations[location_indicies,dim]
         a = CLUSTER_CLUSTERING*data_expectations
         b = CLUSTER_CLUSTERING*(1-data_expectations)
