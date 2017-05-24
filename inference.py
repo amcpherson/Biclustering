@@ -82,19 +82,18 @@ def build_model(data):
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         steps3 = pm.step_methods.HamiltonianMC(vars=[betas,betas2,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        trace = pm.sample(20000,tune=40000,n_init=10000, njobs=1,step=[steps1,steps2,steps3])
+        trace = pm.sample(200,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
 
     return bc_model,trace
 
-def plot_true_clustering(data,location_indicies)
+def plot_true_clustering(data,location_indicies):
     pass
     
 def plot_hard_clustering(model,trace,data):
     with model:
+        print(trace["logP"].shape)
         map_index = np.argmax(trace["logP"])
-        map_est = trace[map_index]
-        print(map_est)
-        indicies = map_est["location_indicies"]
+        indicies = trace["location_indicies"][map_index]
 
     df = pd.DataFrame(data)
     df = df.assign(location_indicies = indicies)
