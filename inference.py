@@ -3,6 +3,7 @@ import numpy as np
 import numpy.random as rnd
 import matplotlib.pyplot as plt
 import pymc3 as pm
+import pandas as pd
 import theano as t
 from theano import tensor as tt
 from theano import printing as tp
@@ -15,6 +16,7 @@ from pymc3.backends import Text
 from data_generator import generate_data
 from scipy import stats
 import seaborn as sns
+import scipy.optimize as opt
 
 MAX_AXIS_CLUSTERS = 5 
 MAX_CLUSTERS = 20
@@ -71,21 +73,77 @@ def build_model(data):
         b=(1-data_expectation)*cluster_clustering
         x = Beta("data",shape=(n,dim),alpha=a,beta=b,observed=data)
         db = Text('trace')
+
+        #estimate = pm.find_MAP(vars=bc_model.vars)
+        #print(estimate)
+        loc = Deterministic("logP",bc_model.logpt)
         
         steps1 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
-        steps3 = pm.step_methods.HamiltonianMC(vars=[betas,betas2,axis_cluster_locations],step_scale=0.02,path_length=1)
-        #steps2 = pm.Metropolis(vars=[cluster_B])
-        trace = pm.sample(3000,tune=40000,n_init=10000, njobs=1,step=[steps1,steps2,steps3]) #,trace=db)
+        steps3 = pm.step_methods.HamiltonianMC(vars=[betas,betas2,axis_cluster_locations],step_scale=0.002,path_length=0.2)
+        #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
+        trace = pm.sample(20000,tune=40000,n_init=10000, njobs=1,step=[steps1,steps2,steps3])
 
     return bc_model,trace
-    
-def get_map_trace(trace,model):
-    pass
 
-def plot_posterior_predictive(trace,data):
-    samples = pm.sample_ppc(trace,len(trace)*10,)
+def plot_true_clustering(data,location_indicies)
     pass
+    
+def plot_hard_clustering(model,trace,data):
+    with model:
+        map_index = np.argmax(trace["logP"])
+        map_est = trace[map_index]
+        print(map_est)
+        indicies = map_est["location_indicies"]
+
+    df = pd.DataFrame(data)
+    df = df.assign(location_indicies = indicies)
+
+    dim = data.shape[1]
+
+    g = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
+    g.map_offdiag(plt.scatter)
+    plt.show()
+
+def plot_ppd(model,trace,data):
+    n_predictions = 1000    
+    burn_in = 500
+    
+    with model:
+        samples = pm.sample_ppc(trace)
+
+    predictions = samples["data"]
+    predictions = predictions[burn_in:,:,:]
+    t,n,d = predictions.shape
+    predictions = np.reshape(predictions,(t*n,d))
+    #thin predictions
+    np.random.shuffle(predictions)
+    predictions = predictions[:n_predictions,:]
+
+    def ppd_plot(x,y,**kwargs):
+        source = kwargs["source"]
+        del kwargs["source"]
+        sns.set_style('whitegrid')
+        sns.plt.ylim(0,1)
+        sns.plt.xlim(0,1)
+        if source == "s":
+            kwargs["cmap"] = "Oranges"
+            sns.kdeplot(x,y,n_levels=20,**kwargs)
+            #plt.scatter(x,y,**kwargs)
+        elif source == "o":
+            kwargs["cmap"] = "Blues"
+            plt.scatter(x,y,**kwargs)
+     
+    df_predictive = pd.DataFrame(predictions)
+    df_predictive = df_predictive.assign(source= lambda x: "s")
+    df_observed = pd.DataFrame(data)
+    df_observed = df_observed.assign(source= lambda x: "o")
+
+    df = pd.concat([df_predictive,df_observed],ignore_index=True)
+    
+    g = sns.PairGrid(df,hue="source",hue_order=["s","o"],hue_kws={"source":["s","o"]})
+    g.map_offdiag(ppd_plot)
+    plt.show()
     
     
 
@@ -104,16 +162,13 @@ def plot_max_n(trace,n,last,spacing):
         sns.plt.ylim(0,1)
         sns.plt.xlim(0,1)
         sns.kdeplot(values[:,0],values[:,0], bw='scott')
-def infer_parameters(model):
-    pass
 
 def main():
     data,locations,mag,_,_ = generate_data()
     model,trace = build_model(data)
-    plot_ppd(trace,data)
-    sns.regplot(x=data[:,0], y=data[:,1], marker="+",fit_reg=False)
-    parameters = infer_parameters(model)
-    plt.show()
+    #plot_ppd(model,trace,data)
+    plot_hard_clustering(model,trace,data)
+    #sns.regplot(x=data[:,0], y=data[:,1], marker="+",fit_reg=False)
 
 if __name__=="__main__":
     print("START")
