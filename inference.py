@@ -31,6 +31,7 @@ def build_model(data,start=None):
         cluster_dp_alpha = 2#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
         cluster_clustering = 500#Gamma("cluster_std_dev",mu=500,sd=250)
+        cluster_sd = 0.06
 
         #per axis DP
         axis_betas = Beta("axis_betas",alpha=axis_alpha,beta=axis_beta,shape=(dim,MAX_AXIS_CLUSTERS))
@@ -65,9 +66,12 @@ def build_model(data,start=None):
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
         #x = Beta("data".format(d),shape=(n,d),mu=data_expectation,sd=cluster_std_dev,observed=data)
-        a=data_expectation*cluster_clustering
-        b=(1-data_expectation)*cluster_clustering
-        x = Beta("data",shape=(n,dim),alpha=a,beta=b,observed=data)
+
+        #a=data_expectation*cluster_clustering
+        #b=(1-data_expectation)*cluster_clustering
+        #x = Beta("data",shape=(n,dim),alpha=a,beta=b,observed=data)
+
+        x = Gamma("data",shape=(n,dim),mu=data_expectation,sd=cluster_sd,observed=data)
         db = Text('trace')
 
         #Log useful information
@@ -81,7 +85,7 @@ def build_model(data,start=None):
         steps3 = pm.step_methods.HamiltonianMC(
             vars=[axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        trace = pm.sample(10,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
+        trace = pm.sample(4000,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
 
     return bc_model,trace
 
