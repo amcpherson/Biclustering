@@ -18,10 +18,10 @@ from scipy import stats
 import seaborn as sns
 import scipy.optimize as opt
 
-MAX_AXIS_CLUSTERS = 5 
-MAX_CLUSTERS = 20
+MAX_AXIS_CLUSTERS = 20
+MAX_CLUSTERS = 40
 
-def build_model(data,start=None):
+def build_model(data,iter_count=1000,start=None):
     n,dim = data.shape
     bc_model = Model()
     with bc_model:
@@ -31,7 +31,7 @@ def build_model(data,start=None):
         cluster_dp_alpha = 2#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
         cluster_clustering = 500#Gamma("cluster_std_dev",mu=500,sd=250)
-        cluster_sd = 0.06
+        cluster_sd = 0.2
 
         #per axis DP
         axis_betas = Beta("axis_betas",alpha=axis_alpha,beta=axis_beta,shape=(dim,MAX_AXIS_CLUSTERS))
@@ -85,16 +85,18 @@ def build_model(data,start=None):
         steps3 = pm.step_methods.HamiltonianMC(
             vars=[axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        trace = pm.sample(4000,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
+        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=[steps1,steps2,steps3])
 
     return bc_model,trace
 
-def plot_hard_clustering(model,trace,data,truth):
+def plot_hard_clustering(model,trace,data,truth=None):
     #extract true indicies and extra indicies
+    is_truth = truth is not None
     with model:
         map_index = np.argmax(trace["logP"])
         indicies = trace["location_indicies"][map_index]
-        true_indicies = truth["location_indicies"]
+        if is_truth:
+            true_indicies = truth["location_indicies"]
 
     df = pd.DataFrame(data)
 
@@ -102,20 +104,23 @@ def plot_hard_clustering(model,trace,data,truth):
 
     def cluster_plot(x,y,**kwargs):
         sns.set_style('whitegrid')
-        sns.plt.ylim(0,1)
-        sns.plt.xlim(0,1)
+        sns.plt.ylim(0,3)
+        sns.plt.xlim(0,3)
         plt.scatter(x,y,**kwargs)
 
+    print(indicies)
     df = df.assign(location_indicies = indicies)
     g = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
     g.fig.suptitle('CLUSTERING')
     g.map_offdiag(cluster_plot)
 
+    
+    if is_truth:
+        df = df.assign(location_indicies = true_indicies)
+        h = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
+        h.fig.suptitle('GROUND TRUTH')
+        h.map_offdiag(cluster_plot)
 
-    df = df.assign(location_indicies = true_indicies)
-    h = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
-    h.fig.suptitle('GROUND TRUTH')
-    h.map_offdiag(cluster_plot)
     plt.show()
     
 
