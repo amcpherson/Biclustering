@@ -13,6 +13,23 @@ CLUSTER_DP_ALPHA = 2
 CLUSTER_CLUSTERING = 500
 
 def generate_data():
+    """Returns a model of the data along with samples from it's posterior.
+    
+    Draws samples from a heirachical dirchelet process model with N+1 dirchelet 
+    processes, where N is the number of dimensions for the data. The first 
+    N dirchelet processes specifiy the location of clusters along each axis and
+    have a uniform beta base distribution. The second dirchelet process uses 
+    the cartesian product of the axis dirchelet processes as it's base distribuiton 
+    to generate cluster means, which are in turn used to put a beta likelyhood 
+    distribuiton over datapoints. 
+
+    Args:
+        None
+
+    Returns:
+        (x,state):The location of the datapoints along with a dictionary
+        containing all of the latent state information.
+    """
     #make axis count prior
     axis_betas= rnd.beta(1,AXIS_DP_ALPHA,size=(DIM,MAX_AXIS_CLUSTERS))
     axis_cluster_magnitudes = np.cumprod(1-axis_betas,axis=1)/(1-axis_betas)*axis_betas
