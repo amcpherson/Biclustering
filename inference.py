@@ -7,8 +7,8 @@ import pandas as pd
 import theano as t
 from theano import tensor as tt
 from theano import printing as tp
-from pymc3 import Model
-from pymc3.distributions.continuous import Gamma,Beta
+from pymc3 import Model,Dirichlet
+from pymc3.distributions.continuous import Gamma,Beta,Exponential
 from pymc3.distributions.discrete import Categorical
 from pymc3 import Deterministic
 from pymc3.backends import Text
@@ -90,7 +90,15 @@ def build_model(data,iter_count=5000,start=None):
         #b=(1-data_expectation)*cluster_clustering
         #x = Beta("data",shape=(n,dim),alpha=a,beta=b,observed=data)
 
-        x = Gamma("data",shape=(n,dim),mu=data_expectation,sd=cluster_sd,observed=data)
+
+        zero_one_center_dist = Dirichlet("zero_one_center_dist",np.array([1,1,1]))
+        zero_dist = Exponential("zero_dist",0.05,shape=(n,dim))
+        one_dist = Gamma("one_dist",shape=(n,dim),mu=data_expectation,sd=cluster_sd)
+        mid_dist = Gamma("mid_dist",shape=(n,dim),mu=data_expectation,sd=cluster_sd)
+
+        x = pm.Mixture("obs",w=zero_one_center_dist,comp_dists=[zero_dist,one_dist,mid_dist],observed=data)
+        
+
         db = Text('trace')
 
         #Log useful information
