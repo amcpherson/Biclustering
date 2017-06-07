@@ -9,7 +9,7 @@ from theano import tensor as tt
 from theano import printing as tp
 from pymc3 import Model,Dirichlet
 from pymc3.distributions.continuous import Gamma,Beta,Exponential
-from pymc3.distributions.discrete import Categorical
+from pymc3.distributions.discrete import Categorical,BetaBinomial
 from pymc3 import Deterministic
 from pymc3.backends import Text
 
@@ -21,7 +21,7 @@ import scipy.optimize as opt
 MAX_AXIS_CLUSTERS = 30
 MAX_CLUSTERS = 40
 #TODO:Remove magic numbers
-def build_model(data,iter_count=5000,start=None):
+def build_model(ref,alt,tre,iter_count=5000,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -41,7 +41,9 @@ def build_model(data,iter_count=5000,start=None):
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
-    n,dim = data.shape
+    #TODO:Add assert statement
+    #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
+    n,dim = ref.shape
     bc_model = Model()
     with bc_model:
         axis_alpha = 1
@@ -49,8 +51,8 @@ def build_model(data,iter_count=5000,start=None):
         axis_dp_alpha = 2#Gamma("axis_dp_alpha",mu=2,sd=1)
         cluster_dp_alpha = 2#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
-        cluster_clustering = 500#Gamma("cluster_std_dev",mu=500,sd=250)
-        cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
+        cluster_clustering = Gamma("cluster_clustering",mu=500,sd=350)
+        #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
         axis_betas = Beta("axis_betas",alpha=axis_alpha,beta=axis_beta,shape=(dim,MAX_AXIS_CLUSTERS))
@@ -86,22 +88,19 @@ def build_model(data,iter_count=5000,start=None):
                 cluster_locations[location_indicies,d])
 
 
-        #a=data_expectation*cluster_clustering
-        #b=(1-data_expectation)*cluster_clustering
-        #x = Beta("data",shape=(n,dim),alpha=a,beta=b,observed=data)
+        a=data_expectation*cluster_clustering
+        b=(1-data_expectation)*cluster_clustering
 
+        f = Deterministic("f_expected",data_expectation)
+        t = tre
+        c = 1
 
-        zero_one_center_dist = Dirichlet("zero_one_center_dist",np.array([1,1,1]))
-        zero_dist = Exponential("zero_dist",0.05,shape=(n,dim))
-        one_dist = Gamma("one_dist",shape=(n,dim),mu=data_expectation,sd=cluster_sd)
-        mid_dist = Gamma("mid_dist",shape=(n,dim),mu=data_expectation,sd=cluster_sd)
+        vaf = f*c/t
 
-        x = pm.Mixture("obs",w=zero_one_center_dist,comp_dists=[zero_dist,one_dist,mid_dist],observed=data)
-        
-
-        db = Text('trace')
+        x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
 
         #Log useful information
+        Deterministic("f",data_expectation)
         Deterministic("cluster_locations",cluster_locations)
         Deterministic("cluster_magnitudes",cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
@@ -110,10 +109,11 @@ def build_model(data,iter_count=5000,start=None):
         steps1 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         steps3 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_sd,axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
+            vars=[cluster_clustering,axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         steps = [steps1,steps2,steps3]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=1,step=steps)
+        db = Text('trace')
+        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=steps,trace=db)
 
     return bc_model,trace
 
