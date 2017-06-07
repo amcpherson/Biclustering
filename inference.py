@@ -112,7 +112,9 @@ def build_model(ref,alt,tre,iter_count=5000,start=None):
             vars=[cluster_clustering,axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
         steps = [steps1,steps2,steps3]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
-        db = Text('trace')
+
+        #Save data to csv
+        db = Text('trace_output')
         trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=steps,trace=db)
 
     return bc_model,trace
