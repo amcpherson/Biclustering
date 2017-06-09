@@ -18,10 +18,10 @@ from scipy import stats
 import seaborn as sns
 import scipy.optimize as opt
 
-MAX_AXIS_CLUSTERS = 30
-MAX_CLUSTERS = 40
+MAX_AXIS_CLUSTERS = 10
+MAX_CLUSTERS = 200
 #TODO:Remove magic numbers
-def build_model(ref,alt,tre,iter_count=5000,start=None):
+def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -48,8 +48,8 @@ def build_model(ref,alt,tre,iter_count=5000,start=None):
     with bc_model:
         axis_alpha = 1
         axis_beta = 1
-        axis_dp_alpha = 2#Gamma("axis_dp_alpha",mu=2,sd=1)
-        cluster_dp_alpha = 2#Gamma("cluster_dp_alpha",mu=2,sd=1)
+        axis_dp_alpha = 0.1#Gamma("axis_dp_alpha",mu=2,sd=1)
+        cluster_dp_alpha = 0.1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
         cluster_clustering = Gamma("cluster_clustering",mu=500,sd=350)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
@@ -93,9 +93,12 @@ def build_model(ref,alt,tre,iter_count=5000,start=None):
 
         f = Deterministic("f_expected",data_expectation)
         t = tre
-        c = 1
+        #copies_prior = np.array()
+        c = Categorical("tumour_copies",p=np.array([0.33, 0.33, 0.33])) + 1
+        #theano.tensor.arange(9)
 
-        vaf = f*c/t
+        vaf = f * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
+        # vaf = f*c/t
 
         x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
 
@@ -108,14 +111,15 @@ def build_model(ref,alt,tre,iter_count=5000,start=None):
         #assign step methods for the sampler
         steps1 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
-        steps3 = pm.step_methods.HamiltonianMC(
+        steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
+        steps4 = pm.step_methods.HamiltonianMC(
             vars=[cluster_clustering,axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
-        steps = [steps1,steps2,steps3]
+        steps = [steps1,steps2,steps3,steps4]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
-        db = Text('trace_output')
-        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=4,step=steps,trace=db)
+        # db = Text('trace_output')
+        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model,trace
 
