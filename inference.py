@@ -41,22 +41,29 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
+    n,dim = ref.shape
+
+    # Ensure cluster indices is the correct shape
+    if 'cluster_indicies' in start:
+        full_cluster_indices = np.zeros((MAX_CLUSTERS,dim)) + 2
+        full_cluster_indices[:start['cluster_indicies'].shape[0], :] = start['cluster_indicies']
+        start['cluster_indicies'] = full_cluster_indices
+
     #TODO:Add assert statement
     #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
-    n,dim = ref.shape
     bc_model = Model()
     with bc_model:
         axis_alpha = 1
         axis_beta = 1
-        axis_dp_alpha = 0.1#Gamma("axis_dp_alpha",mu=2,sd=1)
+        axis_dp_alpha = 0.001#Gamma("axis_dp_alpha",mu=2,sd=1)
         cluster_dp_alpha = 0.1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
-        cluster_clustering = Gamma("cluster_clustering",mu=500,sd=350)
+        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=1.)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
-        axis_betas = Beta("axis_betas",alpha=axis_alpha,beta=axis_beta,shape=(dim,MAX_AXIS_CLUSTERS))
-        axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_betas,axis=1)/(1-axis_betas)*axis_betas
+        axis_dp_betas = Beta("axis_dp_betas",alpha=1,beta=axis_dp_alpha,shape=(dim,MAX_AXIS_CLUSTERS))
+        axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas,axis=1)/(1-axis_dp_betas)*axis_dp_betas
         axis_cluster_magnitudes = tt.set_subtensor(
             axis_cluster_magnitudes[:,-1],
             1-tt.sum(axis_cluster_magnitudes[:,:-1],axis=1))
@@ -69,7 +76,6 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         cluster_magnitudes = tt.set_subtensor(
             cluster_magnitudes[-1],
             1-tt.sum(cluster_magnitudes[:-1]))
-
 
         #spawn axis clusters
         cluster_locations = tt.zeros((MAX_CLUSTERS,dim))
@@ -87,18 +93,14 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
 
-
         a=data_expectation*cluster_clustering
         b=(1-data_expectation)*cluster_clustering
 
         f = Deterministic("f_expected",data_expectation)
         t = tre
-        #copies_prior = np.array()
-        c = Categorical("tumour_copies",p=np.array([0.33, 0.33, 0.33])) + 1
-        #theano.tensor.arange(9)
+        c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
 
         vaf = f * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
-        # vaf = f*c/t
 
         x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
 
@@ -113,8 +115,8 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
         steps4 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
-        steps = [steps1,steps2,steps3,steps4]
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
+        steps = [steps4,steps1,steps2,steps3]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
