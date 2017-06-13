@@ -55,20 +55,38 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
     with bc_model:
         axis_alpha = 1
         axis_beta = 1
-        axis_dp_alpha = 0.001#Gamma("axis_dp_alpha",mu=2,sd=1)
-        cluster_dp_alpha = 0.1#Gamma("cluster_dp_alpha",mu=2,sd=1)
+        axis_dp_alpha = Gamma("axis_dp_alpha", mu=1e-8, sd=1e-8)
+        cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
         cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=1.)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
         axis_dp_betas = Beta("axis_dp_betas",alpha=1,beta=axis_dp_alpha,shape=(dim,MAX_AXIS_CLUSTERS))
-        axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas,axis=1)/(1-axis_dp_betas)*axis_dp_betas
+
+        axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas, axis=1)
+
+        # Shift
+        axis_cluster_magnitudes = tt.set_subtensor(
+            axis_cluster_magnitudes[:, 1:],
+            axis_cluster_magnitudes[:, :-1])
+        axis_cluster_magnitudes = tt.set_subtensor(
+            axis_cluster_magnitudes[:, 0],
+            1.)
+
+        # beta * cumprod(1-beta) 
+        axis_cluster_magnitudes = axis_cluster_magnitudes * axis_dp_betas
+
+        # Normalize with final elements
         axis_cluster_magnitudes = tt.set_subtensor(
             axis_cluster_magnitudes[:,-1],
             1-tt.sum(axis_cluster_magnitudes[:,:-1],axis=1))
+
+        # Impose ordering
+        axis_cluster_magnitudes_flat = axis_cluster_magnitudes.reshape(shape=(dim*MAX_AXIS_CLUSTERS,))
+
         axis_cluster_locations = Beta(
-            "axis_cluster_locations",alpha=axis_alpha, beta=axis_beta, shape=(dim,MAX_AXIS_CLUSTERS))
+            "axis_cluster_locations", alpha=axis_alpha, beta=axis_beta, shape=(dim,MAX_AXIS_CLUSTERS))
 
         #second DP
         cluster_betas = Beta("cluster_betas",1,cluster_dp_alpha,shape=(MAX_CLUSTERS))
@@ -108,6 +126,7 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         Deterministic("f",data_expectation)
         Deterministic("cluster_locations",cluster_locations)
         Deterministic("cluster_magnitudes",cluster_magnitudes)
+        Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
         
         #assign step methods for the sampler
@@ -115,7 +134,7 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
         steps4 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations],step_scale=0.002,path_length=0.2)
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)
         steps = [steps4,steps1,steps2,steps3]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
