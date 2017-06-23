@@ -19,7 +19,7 @@ import seaborn as sns
 import scipy.optimize as opt
 
 MAX_AXIS_CLUSTERS = 10
-MAX_CLUSTERS = 200
+MAX_CLUSTERS = 50
 #TODO:Remove magic numbers
 def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
     """Returns a model of the data along with samples from it's posterior.
@@ -44,10 +44,11 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
     n,dim = ref.shape
 
     # Ensure cluster indices is the correct shape
-    if 'cluster_indicies' in start:
-        full_cluster_indices = np.zeros((MAX_CLUSTERS,dim)) + 2
-        full_cluster_indices[:start['cluster_indicies'].shape[0], :] = start['cluster_indicies']
-        start['cluster_indicies'] = full_cluster_indices
+    if start is not None:
+        if 'cluster_indicies' in start:
+            full_cluster_indices = np.zeros((MAX_CLUSTERS,dim)) + 2
+            full_cluster_indices[:start['cluster_indicies'].shape[0], :] = start['cluster_indicies']
+            start['cluster_indicies'] = full_cluster_indices
 
     #TODO:Add assert statement
     #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
@@ -55,10 +56,10 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
     with bc_model:
         axis_alpha = 1
         axis_beta = 1
-        axis_dp_alpha = Gamma("axis_dp_alpha", mu=1e-8, sd=1e-8)
+        axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
         cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
-        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=1.)
+        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=250)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
@@ -111,19 +112,21 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
 
-        a=data_expectation*cluster_clustering
-        b=(1-data_expectation)*cluster_clustering
-
-        f = Deterministic("f_expected",data_expectation)
+        f = data_expectation
         t = tre
         c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
+        c = 2#<-- TODO REMOVE LATER!!!
 
-        vaf = f * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
+        vaf = data_expectation * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
+        Deterministic("vaf",vaf)
+
+        a=vaf*cluster_clustering
+        b=(1-vaf)*cluster_clustering
 
         x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
 
         #Log useful information
-        Deterministic("f",data_expectation)
+        Deterministic("f_expected",data_expectation)
         Deterministic("cluster_locations",cluster_locations)
         Deterministic("cluster_magnitudes",cluster_magnitudes)
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
@@ -132,10 +135,10 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         #assign step methods for the sampler
         steps1 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
         steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
-        steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
-        steps4 = pm.step_methods.HamiltonianMC(
+        #steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
+        steps3 = pm.step_methods.HamiltonianMC(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)
-        steps = [steps4,steps1,steps2,steps3]
+        steps = [steps1,steps2,steps3]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
