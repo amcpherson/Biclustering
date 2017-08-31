@@ -59,7 +59,7 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
         cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
-        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=250)
+        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=250,shape=(MAX_CLUSTERS,dim))
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
