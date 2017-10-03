@@ -2,8 +2,10 @@
 import numpy as np
 import numpy.random as rnd
 import matplotlib.pyplot as plt
+import mpld3
 import pymc3 as pm
 import pandas as pd
+import theano
 import theano as t
 from theano import tensor as tt
 from theano import printing as tp
@@ -21,7 +23,7 @@ import scipy.optimize as opt
 MAX_AXIS_CLUSTERS = 10
 MAX_CLUSTERS = 50
 #TODO:Remove magic numbers
-def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
+def build_model(ref,alt,tre,tcnt,maj,iter_count=5000,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -84,7 +86,7 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
             1-tt.sum(axis_cluster_magnitudes[:,:-1],axis=1))
 
         # Impose ordering
-        axis_cluster_magnitudes_flat = axis_cluster_magnitudes.reshape(shape=(dim*MAX_AXIS_CLUSTERS,))
+        #axis_cluster_magnitudes_flat = axis_cluster_magnitudes.reshape(shape=(dim*MAX_AXIS_CLUSTERS,))
 
         axis_cluster_locations = Beta(
             "axis_cluster_locations", alpha=axis_alpha, beta=axis_beta, shape=(dim,MAX_AXIS_CLUSTERS))
@@ -106,24 +108,114 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
                 axis_cluster_locations[d,cluster_indicies[:,d]])
 
         data_expectation = tt.zeros((n,dim))
+        dispersion_factors = tt.zeros((n,dim))
         location_indicies = Categorical("location_indicies",shape=(n),p=cluster_magnitudes)
         for d in range(dim):
             data_expectation = tt.set_subtensor(
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
+            dispersion_factors = tt.set_subtensor(
+                dispersion_factors[:,d],
+                cluster_clustering[location_indicies,d])
 
-        f = data_expectation
-        t = tre
-        c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
-        c = 2#<-- TODO REMOVE LATER!!!
+        
+        dispersion = dispersion_factors
+        mutation_ccf = data_expectation
+################################################################################
 
-        vaf = data_expectation * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
-        Deterministic("vaf",vaf)
+        #Account for private mutations but we don't know wthe private mutations
+        """
+        # Neutral evolution
+        private_frac = pm.Uniform('private_frac', lower=0, upper=1., shape=len(mutation_cluster))
+        
+        mutation_ccf_2 = mutation_ccf * (
+            private_frac * is_private +
+            np.ones(len(is_private)) - is_private) # only for privates
+        """
+        mutation_ccf_2 = data_expectation 
 
-        a=vaf*cluster_clustering
-        b=(1-vaf)*cluster_clustering
+        alt_counts = alt
+        total_counts = alt+ref
+        major_cn = maj
+        snv_count = len(major_cn)
+        tumour_content = tcnt
+        variable_tumour_copies = True
+        
+        tcn_vars = []
+        tcns = theano.tensor.zeros(snv_count)
+        for cn in np.unique(major_cn):
+            idx = np.where(major_cn == cn)[0]
+            if cn == 1:
+                tcn = pm.Deterministic('tcn_1', theano.tensor.zeros((len(idx),))) + 1
+            elif cn == 2:
+                tcn = pm.Bernoulli('tcn_2', p=np.array([0.5] * len(idx)), shape=len(idx)) + 1
+            else:
+                tcn = pm.Categorical('tcn_'+str(cn),shape=len(idx),p=np.ones(cn)) + 1
+            tcn_vars.append(tcn)
+            tcns = theano.tensor.set_subtensor(tcns[theano.tensor.as_tensor_variable(idx)], tcn)
 
-        x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
+        pm.Deterministic("tcns", tcns)
+
+        if variable_tumour_copies:
+            mean_tumour_copies = pm.Uniform('mean_tumour_copies', lower=0, upper=1., shape=snv_count)
+            #mean_tumour_copies_v = mean_tumour_copies_v + 4.
+            mean_tumour_copies_v = mean_tumour_copies*(np.repeat(5., snv_count) - tcns) + tcns
+            #mean_tumour_copies_v = pm.Deterministic('mean_tumour_copies_v', mean_tumour_copies_v)
+            #print(mean_tumour_copies.tag.test_value)
+            #slow as molasses
+            #mean_tumour_copies_v = [pm.Uniform('mean_tumour_copies', lower=tcns[i], upper=5.) for i in range(snv_count)]
+        else:
+            #mean_tumour_copies = pm.Deterministic('mean_tumour_copies', mean_tumour_copies)
+            mean_tumour_copies_v = mean_tumour_copies
+        
+        #Account for normal contamination but we don't know the normal average contamination
+        """
+        average_normal_contamination = float(normal_alt_counts.sum())/float(normal_total_counts.sum())
+        
+        nalpha = average_normal_contamination * normal_dispersion
+        nbeta = (1.-average_normal_contamination) * normal_dispersion
+        
+        norm_p = pm.Beta(
+            'np', alpha=nalpha, beta=nbeta,
+            shape = len(mutation_cluster))
+        
+        norm_alt_counts = pm.Binomial(
+            'nx', n=normal_total_counts, p = norm_p,
+            observed = normal_alt_counts)
+        """
+
+        norm_p = 0
+
+        #vaf = (
+        #    mutation_ccf_2 * tcns * tumour_content / 
+        #    (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
+        
+        ## Incorporates noise from the normal. 
+        tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
+        vaf = (
+            (mutation_ccf_2.T * tcns * tumour_content.T + (1-tumour_content.T) * norm_p * 2)/ 
+            (2 * (1 - tumour_content.T) + mean_tumour_copies_v.T * tumour_content.T))
+        vaf = vaf.T
+        alpha = vaf * dispersion
+        beta = (1 - vaf) * dispersion
+
+        alt_counts = pm.BetaBinomial(
+            'x', alpha=alpha, beta=beta,
+            n=total_counts, observed=alt_counts)
+################################################################################
+        #t = tre
+        #c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
+        #c = 2#<-- TODO REMOVE LATER!!!
+
+        #vaf = data_expectation * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
+        #Deterministic("vaf",vaf)
+
+        #a=vaf*cluster_clustering
+        #b=(1-vaf)*cluster_clustering
+
+        #x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
+
+################################################################################
 
         #Log useful information
         Deterministic("f_expected",data_expectation)
@@ -131,19 +223,46 @@ def build_model(ref,alt,tre,tcnt,iter_count=5000,start=None):
         Deterministic("cluster_magnitudes",cluster_magnitudes)
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
+
+        #assign lower step methods for the sampler
+        steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
+        """
+        if variable_tumour_copies:
+            steps2 = pm.step_methods.HamiltonianMC(vars=[
+                #b, 
+                #frac, 
+                #private_frac,
+                mean_tumour_copies,
+                #norm_p,
+                ], step_scale=0.002, path_length=0.2)
+        else:
+            steps2 = pm.step_methods.HamiltonianMC(vars=[
+                #b, 
+                #frac, 
+                #private_frac, 
+                #norm_p
+                ], 
+                step_scale=0.002, path_length=0.2)
+        """
+
         
-        #assign step methods for the sampler
-        steps1 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
-        steps2 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
+        #assign upper step methods for the sampler
+        steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
+        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
         #steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
-        steps3 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)
-        steps = [steps1,steps2,steps3]
+        """steps5 = pm.step_methods.HamiltonianMC(
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)"""
+        steps = [steps1,
+            #steps2,
+            steps3,
+            steps4,
+            #steps5
+            ]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
         # db = Text('trace_output')
-        trace = pm.sample(iter_count,start=start,init=None,tune=40000,n_init=10000, njobs=1,step=steps)#,trace=db)
+        trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model,trace
 
@@ -178,7 +297,7 @@ def plot_hard_clustering(model,trace,data,truth=None):
         h = gen_plot(data,'GROUND TRUTH',true_indicies)
 
 def show_plots():
-    plt.show()
+    mpld3.show()
 
 def get_map_item(model,trace,index):
     """Aquire the MAP estimate of the value
@@ -213,8 +332,8 @@ def gen_plot(data,subtitle,indicies):
     indicies"""
     def cluster_plot(x,y,**kwargs):
         sns.set_style('whitegrid')
-        sns.plt.ylim(0,3)
-        sns.plt.xlim(0,3)
+        #sns.plt.ylim(0,3)
+        #sns.plt.xlim(0,3)
         plt.scatter(x,y,**kwargs)
 
     df = pd.DataFrame(data)
@@ -226,6 +345,9 @@ def gen_plot(data,subtitle,indicies):
     g.map_diag(plt.hist)
     g.add_legend(fontsize=14)
     return g
+
+def plot_axis(model,trace):
+    pass
 
 def plot_cluster_means(data,clustering,subtitle):
     """Plots cluster means of a given dataset with a
