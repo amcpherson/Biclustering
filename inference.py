@@ -19,11 +19,14 @@ from data_generator import generate_data
 from scipy import stats
 import seaborn as sns
 import scipy.optimize as opt
+import pickle
+import os
 
 MAX_AXIS_CLUSTERS = 10
 MAX_CLUSTERS = 50
+THINNING = 1
 #TODO:Remove magic numbers
-def build_model(ref,alt,tre,tcnt,maj,iter_count=5000,start=None):
+def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -262,7 +265,16 @@ def build_model(ref,alt,tre,tcnt,maj,iter_count=5000,start=None):
 
         #Save data to csv
         # db = Text('trace_output')
-        trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
+        if not os.path.isfile(trace_location):
+            trace = pm.sample(iter_count,start=start,init=None,
+                nuts_kwargs={"target_accept":0.9},
+                tune=tune,n_init=10000, njobs=1,step=steps)[::THINNING]
+            with open(trace_location,"wb") as f:
+                pickle.dump(trace,f)
+        else:
+            with open(trace_location,"rb") as f:
+                trace = pickle.load(f)
+        #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model,trace
 
