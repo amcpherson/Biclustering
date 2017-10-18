@@ -26,7 +26,28 @@ MAX_AXIS_CLUSTERS = 10
 MAX_CLUSTERS = 50
 THINNING = 1
 #TODO:Remove magic numbers
-def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500):
+def preprocess_panel(panel):
+
+    ref = get_array(panel,"ref_counts")
+    alt = get_array(panel,"alt_counts")
+    tre = get_array(panel,"total_raw_e")
+    maj = get_array(panel,"major")
+    tcnt = get_array(panel,"tumour_content")
+    data = get_array(panel,"ccf")
+    vaf = get_array(panel,"vaf")
+
+    #Replace uncounted mutations with a count of 1
+    #Ideally we would keep a nan mask and
+    #Infer the unobserved datapoints
+    ref[np.where(ref+alt == 0)] = 1
+    #ref[np.where(np.logical_not((np.isfinite(data))))] = 0
+
+    return ref,alt,tre,tcnt,maj
+
+def get_array(panel,col):
+    return np.array(panel[col])
+
+def build_model(df,iter_count,tune,trace_location):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -46,6 +67,9 @@ def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500):
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
+    x = preprocess_panel(df)
+    ref,alt,tre,tcnt,maj = x
+
     n,dim = ref.shape
 
     #TODO:Add assert statement

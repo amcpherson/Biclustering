@@ -37,35 +37,10 @@ def parse_data(path):
         the names of each sample and the origin node of each data point
     """
     df = pd.DataFrame.from_csv(path,sep='\t')
-    df = df[["sample_id","ccf","Origin Node","alt_counts","ref_counts","total_raw_e","major","tumour_content"]]
-    entries = len(df)
     sample_names,sample_count = get_sample_names(df)
-
-    epsilon = 1E-5
-
-    alt = np.ndarray((entries//sample_count,sample_count),dtype=np.int32)
-    ref = np.ndarray((entries//sample_count,sample_count),dtype=np.int32)
-    tre = np.ndarray((entries//sample_count,sample_count),dtype=np.float32)
-    maj = np.ndarray((entries//sample_count,sample_count),dtype=np.int32)
-    tcnt = np.ndarray((entries//sample_count,sample_count),dtype=np.float32)
-    data = np.ndarray((entries//sample_count,sample_count),dtype=np.float32)
-    node = {}
-    node["location_indicies"] = np.array(df.loc[lambda df: df.sample_id == sample_names[0],"Origin Node"])
-    for i in range(sample_count):
-        alt[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"alt_counts"]
-        ref[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"ref_counts"]
-        tre[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"total_raw_e"]
-        maj[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"major"]
-        tcnt[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"tumour_content"]
-        data[:,i] = df.loc[lambda df: df.sample_id == sample_names[i],"ccf"]
-
-    #Replace uncounted mutations with a count of 1
-    #Ideally we would keep a nan mask and 
-    #Infer the unobserved datapoints
-    ref[np.where(ref+alt == 0)] = 1
-    ref[np.where(np.logical_not((np.isfinite(data))))] = 0
-
-    return data,ref,alt,tre,maj,tcnt,sample_names,node
+    df = df.reset_index("event_id").set_index(["event_id","sample_id"])
+    panel = df.to_panel()
+    return panel,sample_names
 
 def get_sample_names(df):
     sample_names = list(sorted(set(df["sample_id"])))
