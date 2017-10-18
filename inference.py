@@ -26,7 +26,7 @@ MAX_AXIS_CLUSTERS = 10
 MAX_CLUSTERS = 50
 THINNING = 1
 #TODO:Remove magic numbers
-def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500,start=None):
+def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -47,13 +47,6 @@ def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500,sta
 
     """
     n,dim = ref.shape
-
-    # Ensure cluster indices is the correct shape
-    if start is not None:
-        if 'cluster_indicies' in start:
-            full_cluster_indices = np.zeros((MAX_CLUSTERS,dim)) + 2
-            full_cluster_indices[:start['cluster_indicies'].shape[0], :] = start['cluster_indicies']
-            start['cluster_indicies'] = full_cluster_indices
 
     #TODO:Add assert statement
     #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
@@ -226,6 +219,7 @@ def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500,sta
         Deterministic("cluster_magnitudes",cluster_magnitudes)
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
+        Deterministic("model_evidence",alt_counts.logpt)
 
         #assign lower step methods for the sampler
         steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
@@ -266,7 +260,7 @@ def build_model(ref,alt,tre,tcnt,maj,trace_location,iter_count=5000,tune=500,sta
         #Save data to csv
         # db = Text('trace_output')
         if not os.path.isfile(trace_location):
-            trace = pm.sample(iter_count,start=start,init=None,
+            trace = pm.sample(iter_count,start=None,init=None,
                 nuts_kwargs={"target_accept":0.9},
                 tune=tune,n_init=10000, njobs=1,step=steps)[::THINNING]
             with open(trace_location,"wb") as f:
