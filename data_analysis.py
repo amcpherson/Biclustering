@@ -63,7 +63,6 @@ def add_column_to_df(df,column,data):
             pn[column][column2] = data
     df = pn.to_frame()
     df = df.reset_index("sample_id")
-    print(df)
     return df
 
 

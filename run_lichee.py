@@ -20,9 +20,15 @@ def run_lichee(ssnv_input,cluster_input):
         "--present", str(PRESENT),
         "--tree", "1"])
 
-def build_lichee_inputs(dest,df,location_indicies,cluster_indicies,axis_cluster_locations):
+def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations):
+    ssnv_input = os.path.join(dest,"ssnv_input.tsv")
+    cluster_input = os.path.join(dest,"cluster_input.tsv")
+    
+    panel = panel.fillna(0)
+    print(panel.loc[:,"2:113956707:C:T",:])
+    df = panel.to_frame()
     df = df.reset_index(["event_id","sample_id"])
-    df["vaf"].loc[np.isnan(df["vaf"])] = 0
+    
     df = df[["event_id","sample_id","chrom","coord","vaf"]]
     df = df.set_index(["event_id","sample_id"]).unstack("sample_id")
     #Note make this op more efficient later
@@ -31,13 +37,15 @@ def build_lichee_inputs(dest,df,location_indicies,cluster_indicies,axis_cluster_
     vaf = pd.DataFrame(build_location_matrix(location_indicies,cluster_indicies,axis_cluster_locations))
     vaf.columns = df["vaf"].columns
     chrom = df["chrom"]
+        
     coord = df["coord"]
     event_id = df["event_id"]
     vaf.insert(0,"#chr",chrom)
     vaf.insert(1,"position",coord)
     vaf.insert(2,"description",event_id)
     vaf.insert(3,"normal",0)
-    vaf.to_csv("ssnv_input.tsv", sep="\t",index=False)
+
+    vaf.to_csv(ssnv_input, sep="\t",index=False)
 
     #list of clusters with > 0 datapoints
     active_clusters = np.unique(location_indicies)
@@ -53,8 +61,8 @@ def build_lichee_inputs(dest,df,location_indicies,cluster_indicies,axis_cluster_
 
     df = build_snv_clustering(profile_table, location_matrix, snv_index_string_table)
 
-    df.to_csv("cluster_input.tsv",sep="\t",index=False,header=False)
-    return os.path.join(dest,"ssnv_input.tsv"),os.path.join(dest,"cluster_input.tsv")
+    df.to_csv(cluster_input,sep="\t",index=False,header=False)
+    return ssnv_input,cluster_input
 
 def build_snv_clustering(profile_table, location_matrix, snv_index_string_table):
     df = pd.DataFrame(location_matrix)
@@ -83,6 +91,7 @@ def build_location_matrix(indices,cluster_indicies,axis_cluster_locations):
     for i in range(relevant_cluster_indicies.shape[1]):
         location_matrix[:,i] = axis_cluster_locations[i,:][relevant_cluster_indicies[:,i]]
 
+    print(location_matrix)
     return location_matrix
 
 
