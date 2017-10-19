@@ -42,6 +42,7 @@ def preprocess_panel(panel):
     ref[np.where(ref+alt == 0)] = 1
     #ref[np.where(np.logical_not((np.isfinite(data))))] = 0
 
+
     return ref,alt,tre,tcnt,maj
 
 def get_array(panel,col):
@@ -211,7 +212,7 @@ def build_model(df,iter_count,tune,trace_location):
         #    (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
         
         ## Incorporates noise from the normal. 
-        tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
+        #tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
         vaf = (
             (mutation_ccf_2.T * tcns * tumour_content.T + (1-tumour_content.T) * norm_p * 2)/ 
             (2 * (1 - tumour_content.T) + mean_tumour_copies_v.T * tumour_content.T))

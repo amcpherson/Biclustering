@@ -54,7 +54,18 @@ def add_column_to_df(df,column,data):
         except Exception as e:
             print(type(e))
             df.loc[lambda df: df.sample_id == sample_names[i],column] = data[:]
+    df = df.reset_index("event_id").set_index(["event_id","sample_id"])
+    pn = df.to_panel()
+    try:
+        pn[column] = data
+    except Exception as e:
+        for column2 in pn[column].columns:
+            pn[column][column2] = data
+    df = pn.to_frame()
+    df = df.reset_index("sample_id")
+    print(df)
     return df
+
 
 
 if __name__=="__main__":
