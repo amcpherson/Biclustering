@@ -8,6 +8,7 @@ from inference import get_array
 LICHEE="/Users/chuebner/development/python/biclustering/lichee/LICHeE/release/lichee.jar"
 ABSENT = 0.01
 PRESENT = 0.05
+GARBAGE_CLUSTER_THRESHOLD = 15
 
 def run_lichee(ssnv_input,cluster_input):
     subprocess.check_call([
@@ -20,8 +21,8 @@ def run_lichee(ssnv_input,cluster_input):
         "--present", str(PRESENT),
         "--tree", "1"])
 
-def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations):
-
+def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations,cluster_clustering):
+    location_indicies = remove_garbage_clusters(location_indicies,cluster_clustering)
     location_indicies,cluster_indicies = merge_clusters(location_indicies,cluster_indicies)
 
 
@@ -29,7 +30,6 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
     cluster_input = os.path.join(dest,"cluster_input.tsv")
     
     panel = panel.fillna(0)
-    print(panel.loc[:,"2:113956707:C:T",:])
     df = panel.to_frame()
     df = df.reset_index(["event_id","sample_id"])
     
@@ -65,13 +65,25 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
     df.to_csv(cluster_input,sep="\t",index=False,header=False)
     return ssnv_input,cluster_input
 
+def remove_garbage_clusters(location_indicies,cluster_clustering):
+    """remove any clusters with very low clustering parameters"""
+    #This is pretty arbitrary and can probably be improved later/
+    #integrated into the model
+
+    #compute geometric means of cluster clustering per cluster
+    cc_geomean = np.exp(np.average(np.log(cluster_clustering),axis=1))
+
+    is_garbage = cc_geomean < GARBAGE_CLUSTER_THRESHOLD
+    garbage_clusters = np.where(is_garbage)
+    new_location_indicies = location_indicies[np.logical_not(np.isin(location_indicies,garbage_clusters))]
+    return new_location_indicies
+
+
+
+
 def merge_clusters(location_indicies,cluster_indicies):
     """merge clusters with identical cluster index profiles"""
-    print(cluster_indicies.shape)
     new_cluster_indicies,index,inverse = np.unique(cluster_indicies,return_index=True,return_inverse=True,axis=0)
-    print(new_cluster_indicies.shape)
-    print(index.shape)
-    print(inverse.shape)
     new_location_indicies = inverse[location_indicies]
     return new_location_indicies,new_cluster_indicies
 
@@ -102,7 +114,6 @@ def build_location_matrix(indices,cluster_indicies,axis_cluster_locations):
     for i in range(relevant_cluster_indicies.shape[1]):
         location_matrix[:,i] = axis_cluster_locations[i,:][relevant_cluster_indicies[:,i]]
 
-    print(location_matrix)
     return location_matrix
 
 
