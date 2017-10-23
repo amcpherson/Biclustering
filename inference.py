@@ -48,7 +48,7 @@ def preprocess_panel(panel):
 def get_array(panel,col):
     return np.array(panel[col])
 
-def build_model(df,iter_count,tune,trace_location):
+def build_model(df,iter_count,tune,trace_location,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -163,20 +163,23 @@ def build_model(df,iter_count,tune,trace_location):
         variable_tumour_copies = True
         
         tcn_vars = []
-        tcns = theano.tensor.zeros(snv_count)
+        tcns = theano.tensor.zeros((n,dim))
         for cn in np.unique(major_cn):
-            idx = np.where(major_cn == cn)[0]
+            idx = np.where(major_cn == cn)
+            idx_len = len(idx[0])
             if cn == 1:
-                tcn = pm.Deterministic('tcn_1', theano.tensor.zeros((len(idx),))) + 1
+                tcn = pm.Deterministic('tcn_1', theano.tensor.zeros((idx_len,))) + 1
             elif cn == 2:
-                tcn = pm.Bernoulli('tcn_2', p=np.array([0.5] * len(idx)), shape=len(idx)) + 1
+                tcn = pm.Bernoulli('tcn_2', p=np.array([0.5] * idx_len), shape=idx_len) + 1
             else:
-                tcn = pm.Categorical('tcn_'+str(cn),shape=len(idx),p=np.ones(cn)) + 1
+                tcn = pm.Categorical('tcn_'+str(cn),shape=idx_len,p=np.ones(cn)) + 1
             tcn_vars.append(tcn)
-            tcns = theano.tensor.set_subtensor(tcns[theano.tensor.as_tensor_variable(idx)], tcn)
+            idx_0 = theano.tensor.as_tensor_variable(idx[0])
+            idx_1 = theano.tensor.as_tensor_variable(idx[1])
+            tcns = theano.tensor.set_subtensor(tcns[(idx_0,idx_1)],tcn)
 
         pm.Deterministic("tcns", tcns)
-
+        """
         if variable_tumour_copies:
             mean_tumour_copies = pm.Uniform('mean_tumour_copies', lower=0, upper=1., shape=snv_count)
             #mean_tumour_copies_v = mean_tumour_copies_v + 4.
@@ -187,7 +190,9 @@ def build_model(df,iter_count,tune,trace_location):
             #mean_tumour_copies_v = [pm.Uniform('mean_tumour_copies', lower=tcns[i], upper=5.) for i in range(snv_count)]
         else:
             #mean_tumour_copies = pm.Deterministic('mean_tumour_copies', mean_tumour_copies)
-            mean_tumour_copies_v = mean_tumour_copies
+            mean_tumour_copies_v = tre 
+        """
+        mean_tumour_copies_v = tre 
         
         #Account for normal contamination but we don't know the normal average contamination
         """
@@ -214,9 +219,8 @@ def build_model(df,iter_count,tune,trace_location):
         ## Incorporates noise from the normal. 
         #tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
         vaf = (
-            (mutation_ccf_2.T * tcns * tumour_content.T + (1-tumour_content.T) * norm_p * 2)/ 
-            (2 * (1 - tumour_content.T) + mean_tumour_copies_v.T * tumour_content.T))
-        vaf = vaf.T
+            (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
+            (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
         alpha = vaf * dispersion
         beta = (1 - vaf) * dispersion
 
@@ -284,6 +288,13 @@ def build_model(df,iter_count,tune,trace_location):
 
         #Save data to csv
         # db = Text('trace_output')
+        """
+        if start is not None:
+            with open(start,"rb") as f:
+                start_trace = pickle.load(f)
+                print(list(start_trace))
+        """
+
         if not os.path.isfile(trace_location):
             trace = pm.sample(iter_count,start=None,init=None,
                 nuts_kwargs={"target_accept":0.9},

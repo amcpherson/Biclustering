@@ -21,6 +21,10 @@ def run_lichee(ssnv_input,cluster_input):
         "--tree", "1"])
 
 def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations):
+
+    location_indicies,cluster_indicies = merge_clusters(location_indicies,cluster_indicies)
+
+
     ssnv_input = os.path.join(dest,"ssnv_input.tsv")
     cluster_input = os.path.join(dest,"cluster_input.tsv")
     
@@ -53,9 +57,6 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
     profile_table = build_profile_table(location_matrix)
     snv_index_string_table = build_snv_index_string_table(active_clusters,location_indicies)
 
-    #list of clusters with > 0 datapoints
-    active_clusters = np.unique(location_indicies)
-
     location_matrix = build_location_matrix(active_clusters,cluster_indicies,axis_cluster_locations)
     profile_table = build_profile_table(location_matrix)
 
@@ -63,6 +64,16 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
 
     df.to_csv(cluster_input,sep="\t",index=False,header=False)
     return ssnv_input,cluster_input
+
+def merge_clusters(location_indicies,cluster_indicies):
+    """merge clusters with identical cluster index profiles"""
+    print(cluster_indicies.shape)
+    new_cluster_indicies,index,inverse = np.unique(cluster_indicies,return_index=True,return_inverse=True,axis=0)
+    print(new_cluster_indicies.shape)
+    print(index.shape)
+    print(inverse.shape)
+    new_location_indicies = inverse[location_indicies]
+    return new_location_indicies,new_cluster_indicies
 
 def build_snv_clustering(profile_table, location_matrix, snv_index_string_table):
     df = pd.DataFrame(location_matrix)
