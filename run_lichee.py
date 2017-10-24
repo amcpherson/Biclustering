@@ -21,8 +21,12 @@ def run_lichee(ssnv_input,cluster_input):
         "--present", str(PRESENT),
         "--tree", "1"])
 
-def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations,cluster_clustering):
-    location_indicies = remove_garbage_clusters(location_indicies,cluster_clustering)
+def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations,cluster_clustering=None):
+    if cluster_clustering is not None:
+        #Remove garbage cluster
+        location_indicies = remove_garbage_clusters(location_indicies,cluster_clustering)
+
+    #Merge clusters
     location_indicies,cluster_indicies = merge_clusters(location_indicies,cluster_indicies)
 
 

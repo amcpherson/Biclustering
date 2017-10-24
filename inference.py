@@ -22,9 +22,9 @@ import scipy.optimize as opt
 import pickle
 import os
 
-MAX_AXIS_CLUSTERS = 10
-MAX_CLUSTERS = 50
-THINNING = 1
+MAX_AXIS_CLUSTERS = 20
+MAX_CLUSTERS = 100
+THINNING = 5
 #TODO:Remove magic numbers
 def preprocess_panel(panel):
 
@@ -45,10 +45,10 @@ def preprocess_panel(panel):
 
     return ref,alt,tre,tcnt,maj
 
-def get_array(panel,col):
+def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(df,iter_count,tune,trace_location,start=None):
+def build_model(panel, iter_count, tune, trace_location, start=None, cluster_params="one"):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -68,7 +68,7 @@ def build_model(df,iter_count,tune,trace_location,start=None):
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
-    x = preprocess_panel(df)
+    x = preprocess_panel(panel)
     ref,alt,tre,tcnt,maj = x
 
     n,dim = ref.shape
@@ -82,11 +82,20 @@ def build_model(df,iter_count,tune,trace_location,start=None):
         axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
         cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
-        cluster_clustering = Gamma("cluster_clustering",mu=500.,sd=250,shape=(MAX_CLUSTERS,dim))
+        if cluster_params == "samplecluster":
+            shape = (MAX_CLUSTERS,dim)
+        elif cluster_params == "sample":
+            shape = (dim,)
+        elif cluster_params == "one":
+            shape = ()
+        else:
+            raise Exception("invalid clustering")
+
+        cluster_clustering = Gamma("cluster_clustering", mu=500., sd=250,shape=shape)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
-        axis_dp_betas = Beta("axis_dp_betas",alpha=1,beta=axis_dp_alpha,shape=(dim,MAX_AXIS_CLUSTERS))
+        axis_dp_betas = Beta("axis_dp_betas", alpha=1, beta=axis_dp_alpha, shape=(dim,MAX_AXIS_CLUSTERS))
 
         axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas, axis=1)
 
@@ -113,7 +122,7 @@ def build_model(df,iter_count,tune,trace_location,start=None):
             "axis_cluster_locations", alpha=axis_alpha, beta=axis_beta, shape=(dim,MAX_AXIS_CLUSTERS))
 
         #second DP
-        cluster_betas = Beta("cluster_betas",1,cluster_dp_alpha,shape=(MAX_CLUSTERS))
+        cluster_betas = Beta("cluster_betas", 1, cluster_dp_alpha, shape=(MAX_CLUSTERS))
         cluster_magnitudes = tt.extra_ops.cumprod(1-cluster_betas)/(1-cluster_betas)*(cluster_betas)
         cluster_magnitudes = tt.set_subtensor(
             cluster_magnitudes[-1],
@@ -121,7 +130,7 @@ def build_model(df,iter_count,tune,trace_location,start=None):
 
         #spawn axis clusters
         cluster_locations = tt.zeros((MAX_CLUSTERS,dim))
-        cluster_indicies = Categorical("cluster_indicies",shape=(MAX_CLUSTERS,dim),p=axis_cluster_magnitudes)
+        cluster_indicies = Categorical("cluster_indicies", shape=(MAX_CLUSTERS,dim), p=axis_cluster_magnitudes)
         for d in range(dim):
             #TODO:find a cleaner way of doing this
             cluster_locations = tt.set_subtensor(
@@ -130,14 +139,24 @@ def build_model(df,iter_count,tune,trace_location,start=None):
 
         data_expectation = tt.zeros((n,dim))
         dispersion_factors = tt.zeros((n,dim))
-        location_indicies = Categorical("location_indicies",shape=(n),p=cluster_magnitudes)
+        location_indicies = Categorical("location_indicies", shape=(n), p=cluster_magnitudes)
         for d in range(dim):
             data_expectation = tt.set_subtensor(
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
+
+            if cluster_params == "samplecluster":
+                sub_tensor = cluster_clustering[location_indicies,d]
+            elif cluster_params == "sample":
+                sub_tensor = cluster_clustering[d]
+            elif cluster_params == "one":
+                sub_tensor = cluster_clustering
+            else:
+                raise Exception("This should never happen!")
+
             dispersion_factors = tt.set_subtensor(
                 dispersion_factors[:,d],
-                cluster_clustering[location_indicies,d])
+                sub_tensor)
 
         
         dispersion = dispersion_factors
@@ -243,12 +262,12 @@ def build_model(df,iter_count,tune,trace_location,start=None):
 ################################################################################
 
         #Log useful information
-        Deterministic("f_expected",data_expectation)
-        Deterministic("cluster_locations",cluster_locations)
-        Deterministic("cluster_magnitudes",cluster_magnitudes)
+        Deterministic("f_expected", data_expectation)
+        Deterministic("cluster_locations", cluster_locations)
+        Deterministic("cluster_magnitudes", cluster_magnitudes)
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
-        Deterministic("model_evidence",alt_counts.logpt)
+        Deterministic("model_evidence", alt_counts.logpt)
 
         #assign lower step methods for the sampler
         steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
@@ -273,8 +292,8 @@ def build_model(df,iter_count,tune,trace_location,start=None):
 
         
         #assign upper step methods for the sampler
-        steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies],proposal='uniform')
-        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies],proposal='uniform')
+        steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies], proposal='uniform')
+        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies], proposal='uniform')
         #steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
         """steps5 = pm.step_methods.HamiltonianMC(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)"""
@@ -296,19 +315,19 @@ def build_model(df,iter_count,tune,trace_location,start=None):
         """
 
         if not os.path.isfile(trace_location):
-            trace = pm.sample(iter_count,start=None,init=None,
+            trace = pm.sample(iter_count, start=None, init=None,
                 nuts_kwargs={"target_accept":0.9},
-                tune=tune,n_init=10000, njobs=1,step=steps)[::THINNING]
-            with open(trace_location,"wb") as f:
-                pickle.dump(trace,f)
+                tune=tune, n_init=10000, njobs=1, step=steps)[::THINNING]
+            with open(trace_location, "wb") as f:
+                pickle.dump(trace, f)
         else:
-            with open(trace_location,"rb") as f:
+            with open(trace_location, "rb") as f:
                 trace = pickle.load(f)
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
-    return bc_model,trace
+    return bc_model, trace
 
-def plot_hard_clustering(model,trace,data,truth=None):
+def plot_hard_clustering(model, trace, data, truth=None):
     """Plot the hard clustering generated by the MAP estimate of the trace
     along with the true clustering of the data.
     
@@ -329,19 +348,19 @@ def plot_hard_clustering(model,trace,data,truth=None):
     """
     #extract true indicies and extra indicies
     is_truth = truth is not None
-    indicies = get_map_item(model,trace,"location_indicies")
+    indicies = get_map_item(model, trace, "location_indicies")
     if is_truth:
         true_indicies = truth["location_indicies"]
 
-    g = gen_plot(data,'CLUSTERING',indicies)
+    g = gen_plot(data, 'CLUSTERING', indicies)
     
     if is_truth:
-        h = gen_plot(data,'GROUND TRUTH',true_indicies)
+        h = gen_plot(data, 'GROUND TRUTH', true_indicies)
 
 def show_plots():
     mpld3.show()
 
-def get_map_item(model,trace,index):
+def get_map_item(model, trace, index):
     """Aquire the MAP estimate of the value
     of a variable in a model.
 
@@ -357,18 +376,18 @@ def get_map_item(model,trace,index):
         item = trace[index][map_index]
     return item
 
-def compute_cluster_means(data,clustering,cluster_names):
+def compute_cluster_means(data, clustering, cluster_names):
     """Compute the cluster means of some data.
     """
     cluster_count = len(cluster_names)
     dim = data.shape[1]
-    cluster_means = np.ndarray((cluster_count,dim),dtype=np.float32)
+    cluster_means = np.ndarray((cluster_count,dim), dtype=np.float32)
     for i in range(cluster_count):
-        cluster_means[i,:] = np.mean(np.squeeze(data[np.where(clustering==cluster_names[i]),:]),axis=0)
+        cluster_means[i,:] = np.mean(np.squeeze(data[np.where(clustering==cluster_names[i]),:]), axis=0)
     return cluster_means
 
 
-def gen_plot(data,subtitle,indicies):
+def gen_plot(data, subtitle, indicies):
     """Generates a grid plot with a given
     subtitle with coloring specified by 
     indicies"""
@@ -381,36 +400,36 @@ def gen_plot(data,subtitle,indicies):
     df = pd.DataFrame(data)
     dim = data.shape[1]
     df = df.assign(location_indicies = indicies)
-    g = sns.PairGrid(df,hue="location_indicies",vars=range(dim))
+    g = sns.PairGrid(df, hue="location_indicies",vars=range(dim))
     g.fig.suptitle(subtitle)
     g.map_lower(cluster_plot)
     g.map_diag(plt.hist)
     g.add_legend(fontsize=14)
     return g
 
-def plot_axis(model,trace):
+def plot_axis(model, trace):
     pass
 
-def plot_cluster_means(data,clustering,subtitle):
+def plot_cluster_means(data, clustering, subtitle):
     """Plots cluster means of a given dataset with a
     given clustering"""
     indicies = list(set(clustering))
-    cluster_means = compute_cluster_means(data,clustering,indicies)
-    gen_plot(cluster_means,subtitle,indicies)
+    cluster_means = compute_cluster_means(data, clustering, indicies)
+    gen_plot(cluster_means, subtitle, indicies)
 
 
-def display_map_axis_mapping(model,trace):
+def display_map_axis_mapping(model, trace):
     """Creates a lookup table showing each cluster and which cluster
     means are used for each dimension."""
-    mapping = get_map_item(model,trace,"cluster_indicies")
+    mapping = get_map_item(model, trace, "cluster_indicies")
     print(pd.DataFrame(mapping))
     fig, ax = plt.subplots(1)
-    ax.table(cellText=mapping,fontsize=10,rowLabels=range(MAX_CLUSTERS),loc='center',bbox=[0.1, 0.1, 0.9, 0.9])
+    ax.table(cellText=mapping, fontsize=10, rowLabels=range(MAX_CLUSTERS), loc='center', bbox=[0.1, 0.1, 0.9, 0.9])
     ax.get_xaxis().set_visible(False)
     ax.get_yaxis().set_visible(False)
 
 
-def plot_ppd(model,trace,data):
+def plot_ppd(model, trace, data):
     """Plot the posterior predictive distribution over the data.
     
     Takes N dimesensional data, a model, and a trace to produce 
@@ -434,13 +453,13 @@ def plot_ppd(model,trace,data):
     predictions = samples["data"]
     predictions = predictions[burn_in:,:,:]
     t,n,d = predictions.shape
-    predictions = np.reshape(predictions,(t*n,d))
+    predictions = np.reshape(predictions, (t*n,d))
 
     #grab a random sample of predictions
     np.random.shuffle(predictions)
     predictions = predictions[:n_predictions,:]
 
-    def ppd_plot(x,y,**kwargs):
+    def ppd_plot(x, y, **kwargs):
         """Plots kde if kwargs[source]="s" 
             or a scatter plot if kwargs[source]="o" """
         source = kwargs["source"]
@@ -450,11 +469,11 @@ def plot_ppd(model,trace,data):
         sns.plt.xlim(0,1)
         if source == "s":
             kwargs["cmap"] = "Oranges"
-            sns.kdeplot(x,y,n_levels=20,**kwargs)
+            sns.kdeplot(x, y, n_levels=20, **kwargs)
             #plt.scatter(x,y,**kwargs)
         elif source == "o":
             kwargs["cmap"] = "Blues"
-            plt.scatter(x,y,**kwargs)
+            plt.scatter(x, y, **kwargs)
      
     df_predictive = pd.DataFrame(predictions)
     df_predictive = df_predictive.assign(source= lambda x: "s")
@@ -465,13 +484,13 @@ def plot_ppd(model,trace,data):
     df = pd.concat([df_predictive,df_observed],ignore_index=True)
     
     #Map ppd_plot onto the data in a pair grid to visualize predictive density 
-    g = sns.PairGrid(df,hue="source",hue_order=["s","o"],hue_kws={"source":["s","o"]})
+    g = sns.PairGrid(df,hue="source", hue_order=["s","o"], hue_kws={"source":["s","o"]})
     g.map_offdiag(ppd_plot)
     plt.show()
     
     
 
-def plot_max_n(trace,n,last,spacing):
+def plot_max_n(trace, n, last, spacing):
     """Plot the first 2 dimensions of position of the 
     largest n cluster means in a 2 dimensional data set.
 
@@ -505,9 +524,9 @@ def main():
     print("START")
     data,state = generate_data()
     #model,trace = build_model(data,start=state)
-    model,trace = build_model(data,start=None)
+    model,trace = build_model(data, start=None)
     #plot_ppd(model,trace,data)
-    plot_hard_clustering(model,trace,data,state)
+    plot_hard_clustering(model, trace, data, state)
     print("DONE")
 
 if __name__=="__main__":
