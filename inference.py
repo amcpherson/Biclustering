@@ -24,7 +24,7 @@ import os
 
 MAX_AXIS_CLUSTERS = 20
 MAX_CLUSTERS = 100
-THINNING = 5
+THINNING = 2
 #TODO:Remove magic numbers
 def preprocess_panel(panel):
 
@@ -41,7 +41,6 @@ def preprocess_panel(panel):
     #Infer the unobserved datapoints
     ref[np.where(ref+alt == 0)] = 1
     #ref[np.where(np.logical_not((np.isfinite(data))))] = 0
-
 
     return ref,alt,tre,tcnt,maj
 
@@ -186,7 +185,10 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         for cn in np.unique(major_cn):
             idx = np.where(major_cn == cn)
             idx_len = len(idx[0])
-            if cn == 1:
+            if cn == 0:
+                print(idx)
+                raise Exception("Major copy number should not be zero.")
+            elif cn == 1:
                 tcn = pm.Deterministic('tcn_1', theano.tensor.zeros((idx_len,))) + 1
             elif cn == 2:
                 tcn = pm.Bernoulli('tcn_2', p=np.array([0.5] * idx_len), shape=idx_len) + 1
@@ -240,6 +242,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         vaf = (
             (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
             (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
+        vaf = pm.Deterministic("vaf",vaf)
         alpha = vaf * dispersion
         beta = (1 - vaf) * dispersion
 
@@ -307,6 +310,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         #Save data to csv
         # db = Text('trace_output')
+
         """
         if start is not None:
             with open(start,"rb") as f:

@@ -36,11 +36,27 @@ def parse_data(path):
         (data,sample_names,node):The post processed data along with
         the names of each sample and the origin node of each data point
     """
-    df = pd.DataFrame.from_csv(path,sep='\t')
+    df = pd.DataFrame.from_csv(path,sep='\t',index_col=None)
     sample_names,sample_count = get_sample_names(df)
-    df = df.reset_index("event_id").set_index(["event_id","sample_id"])
+    df = df.set_index(["event_id","sample_id"])
     panel = df.to_panel()
+
+    #Filter out anything with a major copy number of zero
+    panel = filter_panel(panel)
     return panel,sample_names
+
+def filter_panel(panel):
+    masks = []
+    masks.append((panel["major"] == 0).any(axis=1))
+    masks.append(np.logical_not(np.isfinite(panel["total_raw_e"]).all(axis=1)))
+
+    bad_snv_mask = False
+    for mask in masks:
+        bad_snv_mask = np.logical_or(bad_snv_mask,mask)
+    bad_snvs = panel[:,bad_snv_mask,:].axes[1]
+
+    panel = panel.drop(bad_snvs,axis=1)
+    return panel
 
 def get_sample_names(df):
     sample_names = list(sorted(set(df["sample_id"])))
@@ -54,7 +70,7 @@ def add_column_to_df(df,column,data):
         except Exception as e:
             print(type(e))
             df.loc[lambda df: df.sample_id == sample_names[i],column] = data[:]
-    df = df.reset_index("event_id").set_index(["event_id","sample_id"])
+    df = df.set_index(["event_id","sample_id"])
     pn = df.to_panel()
     try:
         pn[column] = data
