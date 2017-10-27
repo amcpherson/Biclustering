@@ -62,7 +62,8 @@ def get_sample_names(df):
     sample_names = list(sorted(set(df["sample_id"])))
     return sample_names,len(sample_names)
 
-def add_column_to_df(df,column,data):
+def add_column_to_panel(pn,column,data):
+    """
     sample_names,sample_count = get_sample_names(df)
     for i in range(sample_count):
         try:
@@ -72,14 +73,19 @@ def add_column_to_df(df,column,data):
             df.loc[lambda df: df.sample_id == sample_names[i],column] = data[:]
     df = df.set_index(["event_id","sample_id"])
     pn = df.to_panel()
-    try:
-        pn[column] = data
-    except Exception as e:
-        for column2 in pn[column].columns:
-            pn[column][column2] = data
-    df = pn.to_frame()
-    df = df.reset_index("sample_id")
-    return df
+    """
+    columns = pn.axes[2]
+    df = pd.DataFrame(columns=columns,index=pn.axes[1])
+    if len(data.shape) == 2:
+        df[:,:] = data
+    elif len(data.shape) == 1:
+        for col in columns:
+            df[col] = data
+    else:
+        raise Exception("Invalid data")
+    pn[column] = df
+
+    return pn
 
 
 
