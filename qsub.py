@@ -9,6 +9,7 @@ CMD = "OMP_NUM_THREADS=40 THEANO_FLAGS='openmp=True,openmp_elemwise_minsize=1000
 RUN_CMD = lambda x: ["qsub","-cwd","-q","shahlab.q","-pe","ncpus","2","-l","h_vmem=10G",x]
 
 def main():
+    ps = []
     for id in PATIENT_IDS:
         data = DATA.format(id)
         traces = TRACE.format(id)
@@ -16,12 +17,13 @@ def main():
         script = SCRIPT.format(id)
         cmd = CMD.format(data,traces,lichee)
         with open(script,"w") as f:
-            f.write("source activate ml\n")
+            #f.write("source activate ml\n")
             f.write(cmd)
         run_cmd = RUN_CMD(script)
-        print(run_cmd)
-        subprocess.check_call(run_cmd)
-            
+        #subprocess.check_call(run_cmd)
+        ps.append(subprocess.Popen(["bash",script]))
+    for p in ps:
+        p.wait()
 
 if __name__ == "__main__":
     main()

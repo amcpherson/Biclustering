@@ -17,13 +17,15 @@ from pymc3.backends import Text
 
 from data_generator import generate_data
 from scipy import stats
+from functools import reduce
+from pprint import pprint
 import seaborn as sns
 import scipy.optimize as opt
 import pickle
 import os
 
 MAX_AXIS_CLUSTERS = 20
-MAX_CLUSTERS = 100
+MAX_CLUSTERS = 60
 THINNING = 2
 #TODO:Remove magic numbers
 def preprocess_panel(panel):
@@ -179,25 +181,15 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         snv_count = len(major_cn)
         tumour_content = tcnt
         variable_tumour_copies = True
+        max_cn = np.max(major_cn)
+        cn_iterator = range(1,max_cn+1)
         
         tcn_vars = []
-        tcns = theano.tensor.zeros((n,dim))
-        for cn in np.unique(major_cn):
-            idx = np.where(major_cn == cn)
-            idx_len = len(idx[0])
-            if cn == 0:
-                print(idx)
-                raise Exception("Major copy number should not be zero.")
-            elif cn == 1:
-                tcn = pm.Deterministic('tcn_1', theano.tensor.zeros((idx_len,))) + 1
-            elif cn == 2:
-                tcn = pm.Bernoulli('tcn_2', p=np.array([0.5] * idx_len), shape=idx_len) + 1
-            else:
-                tcn = pm.Categorical('tcn_'+str(cn),shape=idx_len,p=np.ones(cn)) + 1
+        for cn in cn_iterator:
+            tcn = pm.Categorical('tcn_'+str(cn),shape=(n,dim),p=np.ones(cn))
             tcn_vars.append(tcn)
-            idx_0 = theano.tensor.as_tensor_variable(idx[0])
-            idx_1 = theano.tensor.as_tensor_variable(idx[1])
-            tcns = theano.tensor.set_subtensor(tcns[(idx_0,idx_1)],tcn)
+
+        tcns = tt.basic.choose(major_cn-1,tcn_vars)+1
 
         pm.Deterministic("tcns", tcns)
         """
@@ -273,7 +265,8 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         Deterministic("model_evidence", alt_counts.logpt)
 
         #assign lower step methods for the sampler
-        steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
+        #steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
+        #steps1 = pm.Metropolis(vars=tcn_vars, proposal='uniform')
         """
         if variable_tumour_copies:
             steps2 = pm.step_methods.HamiltonianMC(vars=[
@@ -295,12 +288,23 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         
         #assign upper step methods for the sampler
-        steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies], proposal='uniform')
-        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies], proposal='uniform')
+        #steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies])#, proposal='uniform')
+        #steps3 = pm.Metropolis(vars=[location_indicies])#, proposal='uniform')
+        print(tcn_vars)
+        proposals = [None,lambda x: np.random.choice(MAX_CLUSTERS,size = x.shape)] + \
+            [lambda x: np.random.choice(y,size = x.shape) for y in cn_iterator]
+        steps3 = IndependentVectorMetropolis(
+            variables=[alt_counts,location_indicies]+tcn_vars,
+            axes=[(1,),()]+[(1,)]*max_cn,
+            proposals = 
+                proposals,
+            mask =[1,0]+[0]*max_cn)
+        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies])#, proposal='uniform')
+        #steps4 = pm.Metropolis(vars=[cluster_indicies])#, proposal='uniform')
         #steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
         """steps5 = pm.step_methods.HamiltonianMC(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)"""
-        steps = [steps1,
+        steps = [#steps1,
             #steps2,
             steps3,
             steps4,
@@ -317,6 +321,10 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
                 start_trace = pickle.load(f)
                 print(list(start_trace))
         """
+        for rv in bc_model.basic_RVs:
+            print(rv.name, rv.logp(bc_model.test_point))
+            #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
+            #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
 
         if not os.path.isfile(trace_location):
             trace = pm.sample(iter_count, start=None, init=None,
@@ -330,6 +338,100 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace
+
+class IndependentVectorMetropolis(object):
+    def __init__(self, variables=[],axes=[], proposals=[], mask=[]):
+        #mandatory list of variables
+        self.vars = variables
+        #mandatory property
+        self.generates_stats = False
+
+        self.proposals = proposals
+        self.axes = axes
+        self.mask = mask
+
+        self.sequence = list(self._get_indicies_iterator())
+
+        model = pm.model.modelcontext(None)
+        log_p = 0
+        for var_index in range(len(self.vars)):
+            var = self.vars[var_index]
+            axes = self.axes[var_index]
+            log_p += tt.sum(var.logp_elemwiset,axis=axes)
+
+        self.log_p = model.fastfn(log_p)
+
+    def step(self, point):
+        new_point = point.copy()
+        for var_index,np_slice in self.sequence:
+            var = self.vars[var_index]
+            axes = self.axes[var_index]
+            proposal = self.proposals[var_index]
+            name = var.name
+
+
+        proposed_vals = proposal(new_point[name][np_slice])
+        mr = self._metropolis_ratio(proposed_vals, name, np_slice, new_point)
+        new_point[name][np_slice] = self._metropolis_switch(mr, proposed_vals, new_point[name][np_slice])
+
+        return new_point
+
+
+    def _get_indicies_iterator(self):
+        #iterate through all non-independent variables
+        for var_index in range(len(self.vars)):
+            #do not sample from masked variables
+            if self.mask[var_index]:
+                continue
+
+            axes,var = self.axes[var_index],self.vars[var_index]
+            print(var)
+            shape =  var.dshape
+            axes = list(axes)
+            axes.sort()
+
+            if axes == []:
+                yield var_index,(Ellipsis,)
+                continue
+            try:
+                dims = [shape[axis] for axis in axes]
+            except IndexError:
+                raise Exception(
+                "Axes index at position {} to large for variable with shape {}".format(var_index,shape))
+            nmax = reduce(lambda x,y : x*y, dims, 1)
+            for index_num in range(nmax):
+                index = []
+            for i in range(axes[-1]+1):
+                if i in axes:
+                    n = index_num % shape[i]
+                    index_num //= shape[i]
+                    index.append(n)
+                else:
+                    index.append(slice(None))
+                    pass
+            index.append(Ellipsis)
+            yield var_index,tuple(index)
+
+    def _metropolis_ratio(self, proposed_vals, name, np_slice, new_point):
+        old_vals = np.copy(new_point[name][np_slice])
+
+        new_point[name][np_slice] = proposed_vals
+        logp_prop = self._eval_point(new_point)
+
+        new_point[name][np_slice] = old_vals
+        logp_init = self._eval_point(new_point)
+
+        mr = logp_prop - logp_init
+        return mr
+
+    def _eval_point(self,point):
+        return self.log_p(point)
+
+    def _metropolis_switch(self, mr, proposed_vals, curr_vals):
+        shape = mr.shape
+        mask = mr > np.log(np.random.uniform(size=shape))
+        new_vals = np.where(mask, proposed_vals, curr_vals)
+        return new_vals
 
 def plot_hard_clustering(model, trace, data, truth=None):
     """Plot the hard clustering generated by the MAP estimate of the trace
