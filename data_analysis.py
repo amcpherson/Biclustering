@@ -1,29 +1,28 @@
 #!/usr/bin/env python
 
-from inference import build_model,\
-                      plot_hard_clustering,\
-                      plot_cluster_means,\
-                      display_map_axis_mapping,\
-                      show_plots
+import inference as inf
+import run_lichee as re
 from data_generator import generate_data
 import numpy as np
 import pandas as pd
+import sys
 
 def main():
-    path = "data.tsv"
-    print("Parsing Data...")
-    data,ref,alt,tre,maj,tcnt,sample_names,node = parse_data(path)
-    #data,_ = generate_data()
-    print("Generating Model...")
-    model,trace = build_model(ref,alt,tre,tcnt,maj,"trace_output.pkl",30,30,start=node)
-    print(trace["logP"])
-    #print(trace["cluster_clustering"])
-    #print(trace["cluster_magnitudes"][-1])
-    #print("Plotting data...")
-    #display_map_axis_mapping(model,trace)
-    #plot_hard_clustering(model,trace,data,node)
-    #plot_cluster_means(data,node["location_indicies"],"Origin Node Clusters")
-    #show_plots()
+    path,trace_path,lichee = sys.argv[1:4]
+    
+    panel,sample_names = parse_data(path)
+    #print((panel["major"] == 0).to_string())
+    panel["major"] = panel["major"].astype(np.int64)
+    model,trace = inf.build_model(panel,30000,2000,trace_path)
+    location_indicies = inf.get_map_item(model,trace,"location_indicies")
+    cluster_indicies = inf.get_map_item(model,trace,"cluster_indicies")
+    axis_cluster_locations = inf.get_map_item(model,trace,"axis_cluster_locations")
+    try:
+        os.makedirs(lichee)
+    except:
+        pass
+    ssnv_input,cluster_input = rl.build_lichee_inputs(
+        lichee,panel,location_indicies,cluster_indicies,axis_cluster_locations)
     print("Done!")
 
 def parse_data(path):
