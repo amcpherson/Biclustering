@@ -23,6 +23,7 @@ import seaborn as sns
 import scipy.optimize as opt
 import pickle
 import os
+import time
 
 MAX_AXIS_CLUSTERS = 20
 MAX_CLUSTERS = 60
@@ -369,10 +370,9 @@ class IndependentVectorMetropolis(object):
             proposal = self.proposals[var_index]
             name = var.name
 
-
-        proposed_vals = proposal(new_point[name][np_slice])
-        mr = self._metropolis_ratio(proposed_vals, name, np_slice, new_point)
-        new_point[name][np_slice] = self._metropolis_switch(mr, proposed_vals, new_point[name][np_slice])
+            proposed_vals = proposal(new_point[name][np_slice])
+            mr = self._metropolis_ratio(proposed_vals, name, np_slice, new_point)
+            new_point[name][np_slice] = self._metropolis_switch(mr, proposed_vals, new_point[name][np_slice])
 
         return new_point
 
