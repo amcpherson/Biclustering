@@ -320,7 +320,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
-         db = Text('trace_output')
+         #db = Text('trace_output')
 
         """
         if start is not None:
