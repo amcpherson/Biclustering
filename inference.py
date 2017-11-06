@@ -7,6 +7,7 @@ import pymc3 as pm
 import pandas as pd
 import theano
 import theano as t
+import theano.sparse.basic as sp
 from theano import tensor as tt
 from theano import printing as tp
 from pymc3 import Model,Dirichlet
@@ -25,7 +26,7 @@ import pickle
 import os
 import time
 
-MAX_AXIS_CLUSTERS = 20
+MAX_AXIS_CLUSTERS = 14
 MAX_CLUSTERS = 60
 THINNING = 2
 #TODO:Remove magic numbers
@@ -289,9 +290,6 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         
         #assign upper step methods for the sampler
-        #steps3 = pm.CategoricalGibbsMetropolis(vars=[location_indicies])#, proposal='uniform')
-        #steps3 = pm.Metropolis(vars=[location_indicies])#, proposal='uniform')
-        print(tcn_vars)
         proposals = [None,lambda x: np.random.choice(MAX_CLUSTERS,size = x.shape)] + \
             [lambda x: np.random.choice(y,size = x.shape) for y in cn_iterator]
         steps3 = IndependentVectorMetropolis(
@@ -300,21 +298,29 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             proposals = 
                 proposals,
             mask =[1,0]+[0]*max_cn)
-        steps4 = pm.CategoricalGibbsMetropolis(vars=[cluster_indicies])#, proposal='uniform')
-        #steps4 = pm.Metropolis(vars=[cluster_indicies])#, proposal='uniform')
-        #steps3 = pm.CategoricalGibbsMetropolis(vars=[c],proposal='uniform')
-        """steps5 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],step_scale=0.002,path_length=0.2)"""
+        steps4 = IndependentClusterMetropolis(
+            [alt_counts], 
+            [(1,)], 
+            location_indicies, 
+            [cluster_indicies], 
+            [(1,)], 
+            [lambda x: np.random.choice(MAX_AXIS_CLUSTERS,size = x.shape)], 
+            [0], MAX_CLUSTERS, n)
+        steps5 = pm.step_methods.HamiltonianMC(
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],
+            step_scale=0.002,path_length=0.02)
+        #steps5 = [pm.step_methods.Metropolis(
+            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha])]*10
         steps = [#steps1,
             #steps2,
             steps3,
             steps4,
-            #steps5
+            steps5
             ]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         #Save data to csv
-        # db = Text('trace_output')
+         db = Text('trace_output')
 
         """
         if start is not None:
@@ -329,7 +335,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         if not os.path.isfile(trace_location):
             trace = pm.sample(iter_count, start=None, init=None,
-                nuts_kwargs={"target_accept":0.9},
+                #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
                 tune=tune, n_init=10000, njobs=1, step=steps)[::THINNING]
             with open(trace_location, "wb") as f:
                 pickle.dump(trace, f)
@@ -385,7 +391,6 @@ class IndependentVectorMetropolis(object):
                 continue
 
             axes,var = self.axes[var_index],self.vars[var_index]
-            print(var)
             shape =  var.dshape
             axes = list(axes)
             axes.sort()
@@ -401,16 +406,16 @@ class IndependentVectorMetropolis(object):
             nmax = reduce(lambda x,y : x*y, dims, 1)
             for index_num in range(nmax):
                 index = []
-            for i in range(axes[-1]+1):
-                if i in axes:
-                    n = index_num % shape[i]
-                    index_num //= shape[i]
-                    index.append(n)
-                else:
-                    index.append(slice(None))
-                    pass
-            index.append(Ellipsis)
-            yield var_index,tuple(index)
+                for i in range(axes[-1]+1):
+                    if i in axes:
+                        n = index_num % shape[i]
+                        index_num //= shape[i]
+                        index.append(n)
+                    else:
+                        index.append(slice(None))
+                        pass
+                index.append(Ellipsis)
+                yield var_index,tuple(index)
 
     def _metropolis_ratio(self, proposed_vals, name, np_slice, new_point):
         old_vals = np.copy(new_point[name][np_slice])
@@ -432,6 +437,47 @@ class IndependentVectorMetropolis(object):
         mask = mr > np.log(np.random.uniform(size=shape))
         new_vals = np.where(mask, proposed_vals, curr_vals)
         return new_vals
+
+class IndependentClusterMetropolis(IndependentVectorMetropolis):
+    def __init__(self, d_vars, d_var_axes, clustering, c_vars, c_var_axes, c_var_proposals, c_var_mask, num_clusters, num_data):
+        self.generates_stats = False
+
+        self.vars = c_vars
+        self.axes = c_var_axes
+        self.proposals = c_var_proposals
+        self.mask = c_var_mask
+
+        self.d_vars = d_vars
+        self.d_var_axes = d_var_axes
+        self.d_var_axes = d_var_axes
+
+        self.sequence = list(self._get_indicies_iterator())
+
+        log_p = 0
+        for var_index in range(len(self.vars)):
+            var = self.vars[var_index]
+            axes = self.axes[var_index]
+            log_p += tt.sum(var.logp_elemwiset,axis=axes)
+
+        log_p_d = 0
+        for var_index in range(len(self.d_vars)):
+            var = self.d_vars[var_index]
+            axes = self.d_var_axes[var_index]
+            log_p_d += tt.sum(var.logp_elemwiset,axis=axes)
+
+        log_p += self.add_by_clustering(log_p_d,clustering,num_clusters,num_data)
+
+        model = pm.model.modelcontext(None)
+        self.log_p = model.fastfn(log_p)
+
+    def add_by_clustering(self, data, clustering, num_clusters, num_data):
+        a = np.ones(num_data)
+        b = np.arange(0,num_data+1)
+        data = tt.shape_padleft(data)
+        sparse_matrix = sp.CSR(a,clustering,b,(num_data,num_clusters))
+        out_matrix = sp.structured_dot(data,sparse_matrix)
+        output = tt.squeeze(out_matrix)
+        return output
 
 def plot_hard_clustering(model, trace, data, truth=None):
     """Plot the hard clustering generated by the MAP estimate of the trace

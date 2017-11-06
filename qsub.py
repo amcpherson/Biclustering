@@ -5,7 +5,7 @@ DATA = "data/wgs/patient_{}.tsv"
 TRACE = "traces/trace_{}.pkl"
 LICHEE = "lichee/lichee_{}"
 SCRIPT = "scripts/run_{}.sh"
-CMD = "OMP_NUM_THREADS=40 THEANO_FLAGS='openmp=True,openmp_elemwise_minsize=1000' python data_analysis.py {0} {1} {2}\n"
+CMD = "OMP_NUM_THREADS=2 THEANO_FLAGS='openmp=True,openmp_elemwise_minsize=1000' python data_analysis.py {0} {1} {2}\n"
 RUN_CMD = lambda x: ["qsub","-cwd","-q","shahlab.q","-pe","ncpus","2","-l","h_vmem=10G",x]
 
 def main():
