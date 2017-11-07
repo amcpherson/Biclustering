@@ -315,33 +315,22 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             #steps2,
             steps3,
             steps4,
-            steps5
+            #steps5
             ]
         #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
-        #Save data to csv
-         #db = Text('trace_output')
-
-        """
-        if start is not None:
-            with open(start,"rb") as f:
-                start_trace = pickle.load(f)
-                print(list(start_trace))
-        """
         for rv in bc_model.basic_RVs:
             print(rv.name, rv.logp(bc_model.test_point))
             #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
             #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
 
-        if not os.path.isfile(trace_location):
+        if not os.path.isdir(trace_location):
+            db = Text(trace_location)
             trace = pm.sample(iter_count, start=None, init=None,
                 #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
-                tune=tune, n_init=10000, njobs=1, step=steps)[::THINNING]
-            with open(trace_location, "wb") as f:
-                pickle.dump(trace, f)
+                tune=tune, n_init=10000, njobs=1, step=steps,trace=db)
         else:
-            with open(trace_location, "rb") as f:
-                trace = pickle.load(f)
+            trace = pm.backends.text.load(trace_location)
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace

@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 import subprocess
 PATIENT_IDS = [1,2,3,4,7,9,10,11,12,13,14,15,16,17]
-DATA = "data/wgs/patient_{}.tsv"
+DATA = "data/dseq/patient_{}.tsv"
 TRACE = "traces/trace_{}.pkl"
 LICHEE = "lichee/lichee_{}"
 SCRIPT = "scripts/run_{}.sh"
@@ -24,6 +24,7 @@ def main():
         ps.append(subprocess.Popen(["bash",script]))
     for p in ps:
         p.wait()
+
 
 if __name__ == "__main__":
     main()

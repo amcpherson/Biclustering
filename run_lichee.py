@@ -48,6 +48,8 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
         
     coord = df["coord"]
     event_id = df["event_id"]
+    print("V",vaf)
+    print("C",chrom.uni)
     vaf.insert(0,"#chr",chrom)
     vaf.insert(1,"position",coord)
     vaf.insert(2,"description",event_id)

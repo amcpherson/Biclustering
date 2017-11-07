@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import inference as inf
-import run_lichee as re
+import run_lichee as rl
 from data_generator import generate_data
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ def main():
     #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
     model,trace = inf.build_model(panel,15000,5000,trace_path)
+    """
     location_indicies = inf.get_map_item(model,trace,"location_indicies")
     cluster_indicies = inf.get_map_item(model,trace,"cluster_indicies")
     axis_cluster_locations = inf.get_map_item(model,trace,"axis_cluster_locations")
@@ -23,6 +24,7 @@ def main():
         pass
     ssnv_input,cluster_input = rl.build_lichee_inputs(
         lichee,panel,location_indicies,cluster_indicies,axis_cluster_locations)
+    """
     print("Done!")
 
 def parse_data(path):
