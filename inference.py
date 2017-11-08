@@ -28,6 +28,7 @@ import time
 
 MAX_AXIS_CLUSTERS = 14
 MAX_CLUSTERS = 60
+MAX_CN = 5
 THINNING = 2
 #TODO:Remove magic numbers
 def preprocess_panel(panel):
@@ -186,14 +187,19 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         max_cn = np.max(major_cn)
         cn_iterator = range(1,max_cn+1)
         
-        tcn_vars = []
-        for cn in cn_iterator:
-            tcn = pm.Categorical('tcn_'+str(cn),shape=(n,dim),p=np.ones(cn))
-            tcn_vars.append(tcn)
 
-        tcns = tt.basic.choose(major_cn-1,tcn_vars)+1
+        cn_error = 0.05#pm.Beta('cn_error',alpha=1,beta=1)
+        maj_p = np.zeros((MAX_CN,n,dim))
+        for i in range(MAX_CN):
+            cn = i+1
+            array = np.zeros(MAX_CN)
+            array[:cn] = 1/cn
+            maj_p[:,major_cn == cn] = array[:,np.newaxis]
+            
+        p = maj_p*(1-cn_error)+np.ones((MAX_CN,n,dim))/MAX_CN*cn_error
+        tcn_var = TensorCategorical('tcn_var',shape=(n,dim),p=p)
+        tcns = pm.Deterministic('tcns',tcn_var+1)
 
-        pm.Deterministic("tcns", tcns)
         """
         if variable_tumour_copies:
             mean_tumour_copies = pm.Uniform('mean_tumour_copies', lower=0, upper=1., shape=snv_count)
@@ -290,14 +296,18 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         
         #assign upper step methods for the sampler
-        proposals = [None,lambda x: np.random.choice(MAX_CLUSTERS,size = x.shape)] + \
-            [lambda x: np.random.choice(y,size = x.shape) for y in cn_iterator]
+        proposals = [
+            None,
+            lambda x: np.random.choice(MAX_CLUSTERS,size = x.shape),
+            lambda x: np.random.choice(MAX_CN,size = x.shape)
+            ]
+
         steps3 = IndependentVectorMetropolis(
-            variables=[alt_counts,location_indicies]+tcn_vars,
-            axes=[(1,),()]+[(1,)]*max_cn,
+            variables=[alt_counts,location_indicies,tcn_var],
+            axes=[(1,),(),(1,)],
             proposals = 
                 proposals,
-            mask =[1,0]+[0]*max_cn)
+            mask =[1,0,0])
         steps4 = IndependentClusterMetropolis(
             [alt_counts], 
             [(1,)], 
@@ -310,14 +320,14 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],
             step_scale=0.002,path_length=0.02)
         #steps5 = [pm.step_methods.Metropolis(
-            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha])]*10
+            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,
+            #axis_cluster_locations,axis_dp_alpha])]*10
         steps = [#steps1,
             #steps2,
             steps3,
             steps4,
             #steps5
             ]
-        #steps3 = pm.step_methods.Metropolis(vars=[betas,betas2,axis_cluster_locations])
 
         for rv in bc_model.basic_RVs:
             print(rv.name, rv.logp(bc_model.test_point))
@@ -334,6 +344,17 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace
+
+class TensorCategorical(pm.Discrete):
+    def __init__(self, p, *args, **kwargs):
+        super(TensorCategorical, self).__init__(*args, **kwargs)
+        self.p = p/tt.sum(p, axis=0)
+        self.mode = tt.max(p, axis=0)
+
+    def logp(self,value):
+        mask = tt.eq(tt.arange(self.p.shape[0])[:,np.newaxis,np.newaxis],value)
+        vals = tt.sum(mask*self.p, axis=0)
+        return tt.log(vals)
 
 class IndependentVectorMetropolis(object):
     def __init__(self, variables=[],axes=[], proposals=[], mask=[]):

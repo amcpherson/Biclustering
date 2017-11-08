@@ -32,6 +32,8 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
 
     ssnv_input = os.path.join(dest,"ssnv_input.tsv")
     cluster_input = os.path.join(dest,"cluster_input.tsv")
+    print(ssnv_input)
+    print(cluster_input)
     
     panel = panel.fillna(0)
     df = panel.to_frame()
@@ -48,8 +50,6 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
         
     coord = df["coord"]
     event_id = df["event_id"]
-    print("V",vaf)
-    print("C",chrom.uni)
     vaf.insert(0,"#chr",chrom)
     vaf.insert(1,"position",coord)
     vaf.insert(2,"description",event_id)
