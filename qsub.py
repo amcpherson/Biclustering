@@ -5,7 +5,8 @@ DATA = "data/dseq/patient_{}.tsv"
 TRACE = "traces/trace_{}.pkl"
 LICHEE = "lichee/lichee_{}"
 SCRIPT = "scripts/run_{}.sh"
-CMD = "OMP_NUM_THREADS=2 THEANO_FLAGS='openmp=True,openmp_elemwise_minsize=1000' python data_analysis.py {0} {1} {2}\n"
+CMD = "OMP_NUM_THREADS=4 THEANO_FLAGS='openmp=True,openmp_elemwise_minsize=1000' python data_analysis.py {0} {1} {2}\n"
+#CMD = "OMP_NUM_THREADS=2 THEANO_FLAGS='compute_test_value=ignore,floatX=float32,device=cuda0,lib.cnmem=1' python data_analysis.py {0} {1} {2}\n"
 RUN_CMD = lambda x: ["qsub","-cwd","-q","shahlab.q","-pe","ncpus","2","-l","h_vmem=10G",x]
 
 def main():
@@ -19,7 +20,7 @@ def main():
         with open(script,"w") as f:
             #f.write("source activate ml\n")
             f.write(cmd)
-        run_cmd = RUN_CMD(script)
+        #run_cmd = RUN_CMD(script)
         #subprocess.check_call(run_cmd)
         ps.append(subprocess.Popen(["bash",script]))
     for p in ps:
