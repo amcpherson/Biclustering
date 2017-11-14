@@ -1,7 +1,9 @@
 #! /usr/bin/env python
 import subprocess
 PATIENT_IDS = [1,2,3,4,7,9,10,11,12,13,14,15,16,17]
+#PATIENT_IDS = range(15)
 DATA = "data/dseq/patient_{}.tsv"
+#DATA = "data/dseq/patient_1.tsv"
 TRACE = "traces/trace_{}.pkl"
 LICHEE = "lichee/lichee_{}"
 SCRIPT = "scripts/run_{}.sh"

@@ -37,7 +37,7 @@ def preprocess_panel(panel):
     alt = get_array(panel,"alt_counts")
     tre = get_array(panel,"total_raw_e")
     maj = get_array(panel,"major")
-    tcnt = get_array(panel,"tumour_content")
+    tcnt = get_array(panel,"tumour_content")[1,:]
     data = get_array(panel,"ccf")
     vaf = get_array(panel,"vaf")
 
@@ -176,13 +176,14 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             private_frac * is_private +
             np.ones(len(is_private)) - is_private) # only for privates
         """
-        mutation_ccf_2 = data_expectation 
+        tcnt_precision = pm.Gamma("tcnt_precision",mu=2000,sd=2000)
 
+        mutation_ccf_2 = data_expectation 
         alt_counts = alt
         total_counts = alt+ref
         major_cn = maj
         snv_count = len(major_cn)
-        tumour_content = tcnt
+        tumour_content = pm.Beta("tumour_content",alpha=tcnt*tcnt_precision,beta=(1-tcnt)*tcnt_precision,shape=(dim,))
         variable_tumour_copies = True
         max_cn = np.max(major_cn)
         cn_iterator = range(1,max_cn+1)
@@ -239,6 +240,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         
         ## Incorporates noise from the normal. 
         #tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
+        tumour_content = tumour_content[np.newaxis,:]
         vaf = (
             (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
             (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
@@ -298,8 +300,8 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         #assign upper step methods for the sampler
         proposals = [
             None,
-            lambda x: np.random.choice(MAX_CLUSTERS,size = x.shape),
-            lambda x: np.random.choice(MAX_CN,size = x.shape)
+            CatProposal(MAX_CLUSTERS),
+            CatProposal(MAX_CN)
             ]
 
         steps3 = IndependentVectorMetropolis(
@@ -314,10 +316,10 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             location_indicies, 
             [cluster_indicies], 
             [(1,)], 
-            [lambda x: np.random.choice(MAX_AXIS_CLUSTERS,size = x.shape)], 
+            [CatProposal(MAX_AXIS_CLUSTERS)], 
             [0], MAX_CLUSTERS, n)
         steps5 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
             step_scale=0.002,path_length=0.02)
         #steps5 = [pm.step_methods.Metropolis(
             #vars=[cluster_clustering,axis_dp_betas,cluster_betas,
@@ -330,9 +332,10 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             ]
 
         for rv in bc_model.basic_RVs:
-            print(rv.name, rv.logp(bc_model.test_point))
+            #print(rv.name, rv.logp(bc_model.test_point))
             #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
             #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
+            pass
 
         if not os.path.isdir(trace_location):
             db = Text(trace_location)
@@ -344,6 +347,14 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace
+
+class CatProposal:
+    def __init__(self,k):
+        self.k = k
+    def __call__(self,x):
+        return np.random.choice(self.k,size = x.shape)
+        
+    
 
 class TensorCategorical(pm.Discrete):
     def __init__(self, p, *args, **kwargs):
