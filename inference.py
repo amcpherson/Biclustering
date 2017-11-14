@@ -2,7 +2,7 @@
 import numpy as np
 import numpy.random as rnd
 import matplotlib.pyplot as plt
-import mpld3
+#import mpld3
 import pymc3 as pm
 import pandas as pd
 import theano
@@ -30,6 +30,7 @@ MAX_AXIS_CLUSTERS = 14
 MAX_CLUSTERS = 60
 MAX_CN = 5
 THINNING = 2
+TREE_DEPTH = 10
 #TODO:Remove magic numbers
 def preprocess_panel(panel):
 
@@ -52,7 +53,7 @@ def preprocess_panel(panel):
 def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(panel, iter_count, tune, trace_location, start=None, cluster_params="one"):
+def build_model(x, iter_count, tune, trace_location, start=None, cluster_params="one"):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -72,7 +73,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
-    x = preprocess_panel(panel)
+    #x = preprocess_panel(panel)
     ref,alt,tre,tcnt,maj = x
 
     n,dim = ref.shape
@@ -81,11 +82,64 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
     #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
     bc_model = Model()
     with bc_model:
-        axis_alpha = 1
-        axis_beta = 1
-        axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
+        
+        #number of clusters
+        c_count = 2**(TREE_DEPTH+1)-1
+        split_prob= pm.Beta("split_prob",alpha=1,beta=1)
+        is_split = 1#pm.Bernoulli("split_prob",shape=(c_count,dim),p = split_prob)
+        split_factor = pm.Beta("split_factor",shape=(c_count,dim),alpha=1,beta=1)
+        eff_split_factor = split_factor*is_split
+
+        prior_cluster_locations = tt.zeros((c_count,dim))
+        prior_cluster_locations = tt.set_subtensor(
+            prior_cluster_locations[0],
+            eff_split_factor[0])
+        old_start,old_end = 0,1
+        prior_cluster_magnitudes = tt.zeros((c_count,))
+        prior_cluster_magnitudes = tt.set_subtensor(
+            prior_cluster_magnitudes[0],
+            1)
+        relative_magnitude = 1
+        for i in range(TREE_DEPTH):
+            new_start,new_end = old_end,(old_end+1)*2-1
+            left_magnitude = prior_cluster_locations[old_start:old_end]*split_factor[old_start:old_end]
+            right_magnitude = 1-left_magnitude
+            prior_cluster_locations = tt.set_subtensor(
+                prior_cluster_locations[new_start:new_end:2],
+                left_magnitude)
+            prior_cluster_locations = tt.set_subtensor(
+                prior_cluster_locations[new_start+1:new_end:2],
+                right_magnitude)
+            prior_cluster_magnitudes = tt.set_subtensor(
+                prior_cluster_magnitudes[new_start:new_end:2],
+                prior_cluster_magnitudes[old_start:old_end]/2)
+            prior_cluster_magnitudes = tt.set_subtensor(
+                prior_cluster_magnitudes[new_start+1:new_end:2],
+                prior_cluster_magnitudes[old_start:old_end]/2)
+
+            old_start,old_end = new_start,new_end
+
+        #spawn tree clusters
+        cluster_locations = tt.zeros((MAX_CLUSTERS,dim))
+        cluster_indicies = Categorical("cluster_indicies", shape=(MAX_CLUSTERS), p=prior_cluster_magnitudes)
+        for d in range(dim):
+            #TODO:find a cleaner way of doing this
+            cluster_locations = tt.set_subtensor(
+                cluster_locations[:,d],
+                prior_cluster_locations[cluster_indicies[:],d])
+
+
+        #second DP
         cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
-        #concentration parameter for the clusters
+        cluster_betas = Beta("cluster_betas", 1, cluster_dp_alpha, shape=(MAX_CLUSTERS))
+        cluster_magnitudes = tt.extra_ops.cumprod(1-cluster_betas)/(1-cluster_betas)*(cluster_betas)
+        cluster_magnitudes = tt.set_subtensor(
+            cluster_magnitudes[-1],
+            1-tt.sum(cluster_magnitudes[:-1]))
+
+        location_indicies = Categorical("location_indicies", shape=(n), p=cluster_magnitudes)
+        
+        #specify clustering parameter count
         if cluster_params == "samplecluster":
             shape = (MAX_CLUSTERS,dim)
         elif cluster_params == "sample":
@@ -94,56 +148,10 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             shape = ()
         else:
             raise Exception("invalid clustering")
-
         cluster_clustering = Gamma("cluster_clustering", mu=500., sd=250,shape=shape)
-        #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
-
-        #per axis DP
-        axis_dp_betas = Beta("axis_dp_betas", alpha=1, beta=axis_dp_alpha, shape=(dim,MAX_AXIS_CLUSTERS))
-
-        axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas, axis=1)
-
-        # Shift
-        axis_cluster_magnitudes = tt.set_subtensor(
-            axis_cluster_magnitudes[:, 1:],
-            axis_cluster_magnitudes[:, :-1])
-        axis_cluster_magnitudes = tt.set_subtensor(
-            axis_cluster_magnitudes[:, 0],
-            1.)
-
-        # beta * cumprod(1-beta) 
-        axis_cluster_magnitudes = axis_cluster_magnitudes * axis_dp_betas
-
-        # Normalize with final elements
-        axis_cluster_magnitudes = tt.set_subtensor(
-            axis_cluster_magnitudes[:,-1],
-            1-tt.sum(axis_cluster_magnitudes[:,:-1],axis=1))
-
-        # Impose ordering
-        #axis_cluster_magnitudes_flat = axis_cluster_magnitudes.reshape(shape=(dim*MAX_AXIS_CLUSTERS,))
-
-        axis_cluster_locations = Beta(
-            "axis_cluster_locations", alpha=axis_alpha, beta=axis_beta, shape=(dim,MAX_AXIS_CLUSTERS))
-
-        #second DP
-        cluster_betas = Beta("cluster_betas", 1, cluster_dp_alpha, shape=(MAX_CLUSTERS))
-        cluster_magnitudes = tt.extra_ops.cumprod(1-cluster_betas)/(1-cluster_betas)*(cluster_betas)
-        cluster_magnitudes = tt.set_subtensor(
-            cluster_magnitudes[-1],
-            1-tt.sum(cluster_magnitudes[:-1]))
-
-        #spawn axis clusters
-        cluster_locations = tt.zeros((MAX_CLUSTERS,dim))
-        cluster_indicies = Categorical("cluster_indicies", shape=(MAX_CLUSTERS,dim), p=axis_cluster_magnitudes)
-        for d in range(dim):
-            #TODO:find a cleaner way of doing this
-            cluster_locations = tt.set_subtensor(
-                cluster_locations[:,d],
-                axis_cluster_locations[d,cluster_indicies[:,d]])
 
         data_expectation = tt.zeros((n,dim))
         dispersion_factors = tt.zeros((n,dim))
-        location_indicies = Categorical("location_indicies", shape=(n), p=cluster_magnitudes)
         for d in range(dim):
             data_expectation = tt.set_subtensor(
                 data_expectation[:,d],
@@ -161,7 +169,6 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             dispersion_factors = tt.set_subtensor(
                 dispersion_factors[:,d],
                 sub_tensor)
-
         
         dispersion = dispersion_factors
         mutation_ccf = data_expectation
@@ -268,7 +275,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         Deterministic("f_expected", data_expectation)
         Deterministic("cluster_locations", cluster_locations)
         Deterministic("cluster_magnitudes", cluster_magnitudes)
-        Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
+        #Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
         Deterministic("model_evidence", alt_counts.logpt)
 
@@ -313,11 +320,11 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             [(1,)], 
             location_indicies, 
             [cluster_indicies], 
-            [(1,)], 
+            [()], 
             [lambda x: np.random.choice(MAX_AXIS_CLUSTERS,size = x.shape)], 
             [0], MAX_CLUSTERS, n)
         steps5 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha],
+            vars=[cluster_clustering,cluster_betas,split_prob,split_factor],
             step_scale=0.002,path_length=0.02)
         #steps5 = [pm.step_methods.Metropolis(
             #vars=[cluster_clustering,axis_dp_betas,cluster_betas,
@@ -331,8 +338,8 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         for rv in bc_model.basic_RVs:
             print(rv.name, rv.logp(bc_model.test_point))
-            #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
             #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
+        pprint(bc_model.named_vars["vaf"].tag.test_value)
 
         if not os.path.isdir(trace_location):
             db = Text(trace_location)
@@ -684,11 +691,18 @@ def main():
     the resulting clustering along with the ground truth.
     """
     print("START")
-    data,state = generate_data()
+    x = [
+        np.random.randint(5000,size =(200,6)),
+        np.random.randint(5001,10000,size=(200,6)),
+        np.random.uniform(2,4,size=(200,6)),
+        np.random.uniform(size=(1,6)),
+        np.random.randint(1,5,size=(200,6))
+        ]
+    #data,state = generate_data()
     #model,trace = build_model(data,start=state)
-    model,trace = build_model(data, start=None)
+    model,trace = build_model(x,500,500,"trace/trace_null",start=None)
     #plot_ppd(model,trace,data)
-    plot_hard_clustering(model, trace, data, state)
+    #plot_hard_clustering(model, trace, data, state)
     print("DONE")
 
 if __name__=="__main__":
