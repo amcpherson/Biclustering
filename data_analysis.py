@@ -13,7 +13,7 @@ def main():
     panel,sample_names = parse_data(path)
     #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
-    model,trace = inf.build_model(panel,10000,3000,trace_path)
+    model,trace = inf.build_model(panel,10000,3330,trace_path)
     """
     location_indicies = inf.get_map_item(model,trace,"location_indicies")
     cluster_indicies = inf.get_map_item(model,trace,"cluster_indicies")
@@ -75,16 +75,16 @@ def add_column_to_panel(pn,column,data):
     df = df.set_index(["event_id","sample_id"])
     pn = df.to_panel()
     """
-    columns = pn.axes[2]
-    df = pd.DataFrame(columns=columns,index=pn.axes[1])
     if len(data.shape) == 2:
-        df[:,:] = data
+        pn[column] = data
     elif len(data.shape) == 1:
+        columns = pn.axes[2]
+        df = pd.DataFrame(columns=columns,index=pn.axes[1])
         for col in columns:
             df[col] = data
+        pn[column] = df
     else:
         raise Exception("Invalid data")
-    pn[column] = df
 
     return pn
 
