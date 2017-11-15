@@ -113,12 +113,13 @@ def build_snv_index_string_table(active_clusters,location_indicies,):
 
         
 
-def build_location_matrix(indices,cluster_indicies,axis_cluster_locations):
+def build_location_matrix(indices,cluster_indicies,prior_cluster_locations):
     """build matrix representing coordinates of each cluster"""
     relevant_cluster_indicies = cluster_indicies[indices]
-    location_matrix = np.zeros_like(relevant_cluster_indicies,dtype=np.float32)
-    for i in range(relevant_cluster_indicies.shape[1]):
-        location_matrix[:,i] = axis_cluster_locations[i,:][relevant_cluster_indicies[:,i]]
+    location_matrix = prior_cluster_locations[relevant_cluster_indicies]
+    #location_matrix = np.zeros_like(relevant_cluster_indicies,dtype=np.float32)
+    #for i in range(relevant_cluster_indicies.shape[1]):
+        #location_matrix[:,i] = axis_cluster_locations[i,:][relevant_cluster_indicies[:,i]]
 
     return location_matrix
 

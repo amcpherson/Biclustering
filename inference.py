@@ -53,7 +53,7 @@ def preprocess_panel(panel):
 def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(x, iter_count, tune, trace_location, start=None, cluster_params="one"):
+def build_model(panel, iter_count, tune, trace_location, start=None, cluster_params="samplecluster"):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -73,7 +73,7 @@ def build_model(x, iter_count, tune, trace_location, start=None, cluster_params=
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
-    #x = preprocess_panel(panel)
+    x = preprocess_panel(panel)
     ref,alt,tre,tcnt,maj = x
 
     n,dim = ref.shape
@@ -87,6 +87,7 @@ def build_model(x, iter_count, tune, trace_location, start=None, cluster_params=
         c_count = 2**(TREE_DEPTH+1)-1
         split_prob= pm.Beta("split_prob",alpha=1,beta=1)
         is_split = 1#pm.Bernoulli("split_prob",shape=(c_count,dim),p = split_prob)
+        #split_alpha = pm.Gamma("split_alpha",mu=2,sd=2)
         split_factor = pm.Beta("split_factor",shape=(c_count,dim),alpha=1,beta=1)
         eff_split_factor = split_factor*is_split
 
@@ -103,7 +104,7 @@ def build_model(x, iter_count, tune, trace_location, start=None, cluster_params=
         for i in range(TREE_DEPTH):
             new_start,new_end = old_end,(old_end+1)*2-1
             left_magnitude = prior_cluster_locations[old_start:old_end]*split_factor[old_start:old_end]
-            right_magnitude = 1-left_magnitude
+            right_magnitude = prior_cluster_locations[old_start:old_end]*(1-split_factor[old_start:old_end])
             prior_cluster_locations = tt.set_subtensor(
                 prior_cluster_locations[new_start:new_end:2],
                 left_magnitude)
@@ -277,7 +278,7 @@ def build_model(x, iter_count, tune, trace_location, start=None, cluster_params=
         Deterministic("f_expected", data_expectation)
         Deterministic("cluster_locations", cluster_locations)
         Deterministic("cluster_magnitudes", cluster_magnitudes)
-        #Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
+        Deterministic("prior_cluster_locations",prior_cluster_locations)
         Deterministic("logP",bc_model.logpt)
         Deterministic("model_evidence", alt_counts.logpt)
 
