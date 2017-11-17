@@ -5,27 +5,57 @@ import run_lichee as rl
 from data_generator import generate_data
 import numpy as np
 import pandas as pd
+import os.path
 import sys
 
+BURNIN = 4000
+SUBSAMPLE = 50
+THRESH = 5
 def main():
     path,trace_path,lichee = sys.argv[1:4]
     
     panel,sample_names = parse_data(path)
     #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
-    model,trace = inf.build_model(panel,10000,3330,trace_path)
-    """
-    location_indicies = inf.get_map_item(model,trace,"location_indicies")
-    cluster_indicies = inf.get_map_item(model,trace,"cluster_indicies")
-    axis_cluster_locations = inf.get_map_item(model,trace,"axis_cluster_locations")
+    model,trace = inf.build_model(panel,350000,10000,trace_path)
     try:
         os.makedirs(lichee)
     except:
         pass
-    ssnv_input,cluster_input = rl.build_lichee_inputs(
-        lichee,panel,location_indicies,cluster_indicies,axis_cluster_locations)
-    """
+
+    sub_trace = trace[BURNIN::SUBSAMPLE]
+    location_indicies_list = list(sub_trace["location_indicies"])
+    cluster_indicies_list = list(sub_trace["cluster_indicies"])
+    axis_cluster_locations_list = list(sub_trace["axis_cluster_locations"])
+    l = list(zip(location_indicies_list,cluster_indicies_list,axis_cluster_locations_list))
+    data = os.path.join(lichee,"c_count.txt")
+    with open(data,"w") as f:
+        for i in range(len(l)):
+            index = i*SUBSAMPLE+BURNIN
+            location_indicies,cluster_indicies,axis_cluster_locations = l[i]
+            pre_active_clusters,counts = np.unique(location_indicies,return_counts=True)
+            active_clusters = pre_active_clusters[counts > THRESH]
+            max_n = len(active_clusters)
+            ssnv_input,cluster_input = rl.build_lichee_inputs(
+                lichee,panel,location_indicies,cluster_indicies,axis_cluster_locations,treshold=THRESH)
+            output = os.path.join(lichee,"output_{}".format(index))
+            tree = rl.run_lichee(ssnv_input,cluster_input,output)
+            count = check_lichee_output(tree)
+            f.write("{}:{}:{}\n".format(index,count,max_n))
+
     print("Done!")
+
+def check_lichee_output(tree):
+    with open(tree,"r") as f:
+        f.readline()
+        count = 0
+        while(True):
+            line =  f.readline()
+            if line is "\n":
+                break
+            count += 1
+        return count
+
 
 def parse_data(path):
     """Reads a tsv file and converts it to clusterable data for

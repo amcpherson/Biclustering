@@ -5,26 +5,34 @@ import os.path
 import subprocess
 from inference import get_array
 #path to LICHeE
-LICHEE="/Users/chuebner/development/python/biclustering/lichee/LICHeE/release/lichee.jar"
+LICHEE="./lichee/LICHeE/release/lichee.jar"
 ABSENT = 0.01
 PRESENT = 0.05
 GARBAGE_CLUSTER_THRESHOLD = 15
-
-def run_lichee(ssnv_input,cluster_input):
-    subprocess.check_call([
-        "java", "-jar", LICHEE,
+DEF_MIN_SNV_COUNT = 5
+def run_lichee(ssnv_input,cluster_input,tree_output):
+    tree = tree_output+".tree"
+    viz = tree_output+".dot"
+    subprocess.call([
+        "xvfb-run", "java", "-jar", LICHEE,
         "-build",
+        "-cp",
         "-i", ssnv_input,
         "-clustersFile", cluster_input,
         "-n", "0",
+        "-o", tree,
+        "-dot",
+        "-dotFile", viz,
+        "-e", "0.0",
         "--absent", str(ABSENT),
         "--present", str(PRESENT),
-        "--tree", "1"])
+        ],
+        stdout=open(os.devnull, 'wb'),
+        stderr=open(os.devnull, 'wb'),
+        )
+    return tree
 
-def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations,cluster_clustering=None):
-    if cluster_clustering is not None:
-        #Remove garbage cluster
-        location_indicies = remove_garbage_clusters(location_indicies,cluster_clustering)
+def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_cluster_locations,treshold=DEF_MIN_SNV_COUNT):
 
     #Merge clusters
     location_indicies,cluster_indicies = merge_clusters(location_indicies,cluster_indicies)
@@ -32,8 +40,8 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
 
     ssnv_input = os.path.join(dest,"ssnv_input.tsv")
     cluster_input = os.path.join(dest,"cluster_input.tsv")
-    print(ssnv_input)
-    print(cluster_input)
+    #print(ssnv_input)
+    #print(cluster_input)
     
     panel = panel.fillna(0)
     df = panel.to_frame()
@@ -58,7 +66,8 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
     vaf.to_csv(ssnv_input, sep="\t",index=False)
 
     #list of clusters with > 0 datapoints
-    active_clusters = np.unique(location_indicies)
+    pre_active_clusters,counts = np.unique(location_indicies,return_counts=True)
+    active_clusters = pre_active_clusters[counts > treshold]
     location_matrix = build_location_matrix(active_clusters,cluster_indicies,axis_cluster_locations)
     profile_table = build_profile_table(location_matrix)
     snv_index_string_table = build_snv_index_string_table(active_clusters,location_indicies)
@@ -110,7 +119,6 @@ def build_snv_index_string_table(active_clusters,location_indicies,):
         strings.append(string)
     string_table = np.array(strings)
     return string_table
-
         
 
 def build_location_matrix(indices,cluster_indicies,axis_cluster_locations):
