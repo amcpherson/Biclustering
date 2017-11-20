@@ -86,6 +86,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
         cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
         #concentration parameter for the clusters
+        """
         if cluster_params == "samplecluster":
             shape = (MAX_CLUSTERS,dim)
         elif cluster_params == "sample":
@@ -95,7 +96,8 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         else:
             raise Exception("invalid clustering")
 
-        cluster_clustering = Gamma("cluster_clustering", mu=500., sd=250,shape=shape)
+        cluster_clustering = Gamma("cluster_clustering", mu=500., sd=450,shape=shape)
+        """
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
@@ -141,14 +143,26 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
                 cluster_locations[:,d],
                 axis_cluster_locations[d,cluster_indicies[:,d]])
 
+        #zero_frac = Beta("zero_frac",alpha= 1, beta = 1)
+        #is_zero = Categorical("is_zero",shape=(MAX_CLUSTERS,dim), p=[1-zero_frac,zero_frac])
+        #zero_dispersion = Gamma("zero_dispersion", mu=500., sd=250)
+        #zero_vaf = 0.01#Beta("zero_vaf", alpha=1, beta=10)
+
         data_expectation = tt.zeros((n,dim))
+        data_is_zero = tt.zeros((n,dim))
         dispersion_factors = tt.zeros((n,dim))
         location_indicies = Categorical("location_indicies", shape=(n), p=cluster_magnitudes)
         for d in range(dim):
             data_expectation = tt.set_subtensor(
                 data_expectation[:,d],
                 cluster_locations[location_indicies,d])
-
+            """
+            data_is_zero = tt.set_subtensor(
+                data_is_zero[:,d],
+                is_zero[location_indicies,d])
+            """
+            
+            """
             if cluster_params == "samplecluster":
                 sub_tensor = cluster_clustering[location_indicies,d]
             elif cluster_params == "sample":
@@ -161,9 +175,17 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             dispersion_factors = tt.set_subtensor(
                 dispersion_factors[:,d],
                 sub_tensor)
+            """
 
+        DISP_COUNT = 2
+        dispersion_factors = Gamma("dispersion_factors", mu=500., sd=450,shape=(DISP_COUNT,))
+        disp_dist = pm.Dirichlet("disp_dist",np.array([1]*DISP_COUNT,dtype=np.float32))
+        disp_index = Categorical("disp_index",p=disp_dist,shape=(n,dim))
         
-        dispersion = dispersion_factors
+        
+        dispersion = tt.zeros((n,dim))
+        for i in range(DISP_COUNT):
+            dispersion = tt.switch(tt.eq(disp_index,i),dispersion_factors[i],dispersion)
         mutation_ccf = data_expectation
 ################################################################################
 
@@ -244,9 +266,9 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         vaf = (
             (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
             (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
-        vaf = pm.Deterministic("vaf",vaf)
-        alpha = vaf * dispersion
-        beta = (1 - vaf) * dispersion
+        vaf = pm.Deterministic("vaf",vaf) #* (1-data_is_zero) + data_is_zero * zero_vaf
+        alpha = vaf * dispersion #* (1-data_is_zero) + data_is_zero * zero_dispersion * zero_vaf
+        beta = (1 - vaf) * dispersion #* (1-data_is_zero) + data_is_zero * zero_dispersion * (1 - zero_vaf)
 
         alt_counts = pm.BetaBinomial(
             'x', alpha=alpha, beta=beta,
@@ -298,12 +320,16 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         
         #assign upper step methods for the sampler
+        steps2 = IndependentVectorMetropolis(
+            variables=[alt_counts,disp_index],
+            axes=[(),()],
+            proposals = [None,CatProposal(DISP_COUNT)],
+            mask =[1,0])
         proposals = [
             None,
             CatProposal(MAX_CLUSTERS),
             CatProposal(MAX_CN)
             ]
-
         steps3 = IndependentVectorMetropolis(
             variables=[alt_counts,location_indicies,tcn_var],
             axes=[(1,),(),(1,)],
@@ -319,13 +345,13 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             [CatProposal(MAX_AXIS_CLUSTERS)], 
             [0], MAX_CLUSTERS, n)
         steps5 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
+            vars=[axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content,dispersion_factors,disp_dist],
             step_scale=0.002,path_length=0.02)
         #steps5 = [pm.step_methods.Metropolis(
             #vars=[cluster_clustering,axis_dp_betas,cluster_betas,
             #axis_cluster_locations,axis_dp_alpha])]*10
         steps = [#steps1,
-            #steps2,
+            steps2,
             steps3,
             steps4,
             #steps5
