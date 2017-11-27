@@ -17,12 +17,22 @@ def main():
     panel,sample_names = parse_data(path)
     #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
-    model,trace = inf.build_model(panel,350000,10000,trace_path)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.02)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.05)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.0)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.1)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.2)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.3)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=10)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=100)
+    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1000)
     try:
         os.makedirs(lichee)
     except:
         pass
 
+    """
     sub_trace = trace[BURNIN::SUBSAMPLE]
     location_indicies_list = list(sub_trace["location_indicies"])
     cluster_indicies_list = list(sub_trace["cluster_indicies"])
@@ -42,7 +52,7 @@ def main():
             tree = rl.run_lichee(ssnv_input,cluster_input,output)
             count = check_lichee_output(tree)
             f.write("{}:{}:{}\n".format(index,count,max_n))
-
+    """
     print("Done!")
 
 def check_lichee_output(tree):

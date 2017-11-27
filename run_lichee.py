@@ -54,10 +54,10 @@ def build_lichee_inputs(dest,panel,location_indicies,cluster_indicies,axis_clust
     df = df.T.drop_duplicates().T.reset_index("event_id")
     vaf = pd.DataFrame(build_location_matrix(location_indicies,cluster_indicies,axis_cluster_locations))
     vaf.columns = df["vaf"].columns
-    chrom = df["chrom"]
-        
-    coord = df["coord"]
-    event_id = df["event_id"]
+
+    chrom = df["chrom"]#[df["chrom"].columns[0]]
+    coord = df["coord"]#[df["coord"].columns[0]]
+    event_id = df["event_id"]#[df["event_id"].columns[0]]
     vaf.insert(0,"#chr",chrom)
     vaf.insert(1,"position",coord)
     vaf.insert(2,"description",event_id)

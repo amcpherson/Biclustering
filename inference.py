@@ -52,7 +52,7 @@ def preprocess_panel(panel):
 def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(panel, iter_count, tune, trace_location, start=None, cluster_params="one"):
+def build_model(panel, tune, iter_count, trace_location, cont=False, cluster_params="one", thermodynamic_beta=1):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -245,12 +245,18 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
             (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
         vaf = pm.Deterministic("vaf",vaf)
-        alpha = vaf * dispersion
-        beta = (1 - vaf) * dispersion
+
+        #garbage_frac = Beta("garbage_frac",alpha=1,beta=10)
+        #is_garbage = pm.Bernoulli("is_garbage",p=garbage_frac,shape=(n,))
+        #is_garbage_t = is_garbage[:,np.newaxis]
+
+        alpha = vaf * dispersion #* (1 - is_garbage_t) + is_garbage_t
+        beta = (1 - vaf) * dispersion #* (1 - is_garbage_t) + is_garbage_t
 
         alt_counts = pm.BetaBinomial(
             'x', alpha=alpha, beta=beta,
             n=total_counts, observed=alt_counts)
+
 ################################################################################
         #t = tre
         #c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
@@ -273,6 +279,8 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
         Deterministic("model_evidence", alt_counts.logpt)
+
+        pm.Potential("chill_factor",bc_model.logpt*(thermodynamic_beta-1))
 
         #assign lower step methods for the sampler
         #steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
@@ -303,13 +311,19 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             CatProposal(MAX_CLUSTERS),
             CatProposal(MAX_CN)
             ]
-
+        """
+        steps2 = IndependentVectorMetropolis(
+            variables=[alt_counts,is_garbage],
+            axes=[(1,),()],
+            proposals = [None,CatProposal(2)],
+            mask=[1,0])
+        """
         steps3 = IndependentVectorMetropolis(
             variables=[alt_counts,location_indicies,tcn_var],
             axes=[(1,),(),(1,)],
             proposals = 
                 proposals,
-            mask =[1,0,0])
+            mask =[1,0,0], t_b=thermodynamic_beta)
         steps4 = IndependentClusterMetropolis(
             [alt_counts], 
             [(1,)], 
@@ -317,7 +331,7 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
             [cluster_indicies], 
             [(1,)], 
             [CatProposal(MAX_AXIS_CLUSTERS)], 
-            [0], MAX_CLUSTERS, n)
+            [0], MAX_CLUSTERS, n, t_b=thermodynamic_beta)
         steps5 = pm.step_methods.HamiltonianMC(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
             step_scale=0.002,path_length=0.02)
@@ -339,9 +353,14 @@ def build_model(panel, iter_count, tune, trace_location, start=None, cluster_par
 
         if not os.path.isdir(trace_location):
             db = Text(trace_location)
-            trace = pm.sample(iter_count, start=None, init=None,
+            trace = pm.sample(iter_count,
                 #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
                 tune=tune, n_init=10000, njobs=1, step=steps,trace=db)
+        elif cont is True:
+            trace = pm.backends.text.load(trace_location)
+            trace = pm.sample(iter_count,
+                #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
+                tune=tune, n_init=10000, njobs=1, step=steps,trace=trace)
         else:
             trace = pm.backends.text.load(trace_location)
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
@@ -368,7 +387,7 @@ class TensorCategorical(pm.Discrete):
         return tt.log(vals)
 
 class IndependentVectorMetropolis(object):
-    def __init__(self, variables=[],axes=[], proposals=[], mask=[]):
+    def __init__(self, variables=[],axes=[], proposals=[], mask=[],t_b = 1):
         #mandatory list of variables
         self.vars = variables
         #mandatory property
@@ -388,6 +407,9 @@ class IndependentVectorMetropolis(object):
             log_p += tt.sum(var.logp_elemwiset,axis=axes)
 
         self.log_p = model.fastfn(log_p)
+
+        #set thermodynamic_beta
+        self.t_b = t_b
 
     def step(self, point):
         new_point = point.copy()
@@ -447,7 +469,7 @@ class IndependentVectorMetropolis(object):
         new_point[name][np_slice] = old_vals
         logp_init = self._eval_point(new_point)
 
-        mr = logp_prop - logp_init
+        mr = (logp_prop - logp_init)*self.t_b
         return mr
 
     def _eval_point(self,point):
@@ -460,7 +482,7 @@ class IndependentVectorMetropolis(object):
         return new_vals
 
 class IndependentClusterMetropolis(IndependentVectorMetropolis):
-    def __init__(self, d_vars, d_var_axes, clustering, c_vars, c_var_axes, c_var_proposals, c_var_mask, num_clusters, num_data):
+    def __init__(self, d_vars, d_var_axes, clustering, c_vars, c_var_axes, c_var_proposals, c_var_mask, num_clusters, num_data,t_b=1):
         self.generates_stats = False
 
         self.vars = c_vars
@@ -490,6 +512,9 @@ class IndependentClusterMetropolis(IndependentVectorMetropolis):
 
         model = pm.model.modelcontext(None)
         self.log_p = model.fastfn(log_p)
+
+        #set thermodynamic_beta
+        self.t_b = t_b
 
     def add_by_clustering(self, data, clustering, num_clusters, num_data):
         a = np.ones(num_data)
