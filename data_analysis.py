@@ -17,16 +17,20 @@ def main():
     panel,sample_names = parse_data(path)
     #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.02)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.05)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.0)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.1)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.2)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1.3)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=10)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=100)
-    model,trace = inf.build_model(panel,500,500,trace_path,cont=True, thermodynamic_beta=1000)
+    annealing_schedule = [
+        (10000,2000,1,None),
+        (1500,500,1.02,None),
+        (1500,500,1.05,None),
+        (1500,500,1.1,None),
+        (1500,500,1.2,None),
+        (1500,500,1.3,None),
+        (1500,500,10,None),
+        (1500,500,100,None),
+        (1500,500,1000,None)
+        ]
+    trace = None
+    for tune,sample,t_b,start in annealing_schedule:
+        _,trace = inf.build_model(panel, tune, sample, trace_path, prev_trace=trace, thermodynamic_beta=t_b,start=start)
     try:
         os.makedirs(lichee)
     except:
@@ -54,6 +58,11 @@ def main():
             f.write("{}:{}:{}\n".format(index,count,max_n))
     """
     print("Done!")
+
+def load_prev(path,panel):
+    _,trace = inf.build_model(panel, 1, 1, path)
+    print(trace[2000])
+    return trace[2000]
 
 def check_lichee_output(tree):
     with open(tree,"r") as f:

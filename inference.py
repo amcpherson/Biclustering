@@ -27,7 +27,7 @@ import os
 import time
 
 MAX_AXIS_CLUSTERS = 14
-MAX_CLUSTERS = 60
+MAX_CLUSTERS = 50
 MAX_CN = 5
 THINNING = 2
 #TODO:Remove magic numbers
@@ -52,7 +52,7 @@ def preprocess_panel(panel):
 def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(panel, tune, iter_count, trace_location, cont=False, cluster_params="one", thermodynamic_beta=1):
+def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluster_params="one", thermodynamic_beta=1,start=None):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -305,25 +305,16 @@ def build_model(panel, tune, iter_count, trace_location, cont=False, cluster_par
         """
 
         
-        #assign upper step methods for the sampler
-        proposals = [
-            None,
-            CatProposal(MAX_CLUSTERS),
-            CatProposal(MAX_CN)
-            ]
-        """
         steps2 = IndependentVectorMetropolis(
-            variables=[alt_counts,is_garbage],
-            axes=[(1,),()],
-            proposals = [None,CatProposal(2)],
-            mask=[1,0])
-        """
+            variables=[alt_counts,tcn_var],
+            axes=[(),()],
+            proposals = [None,CatProposal(MAX_CN)],
+            mask=[1,0], t_b=thermodynamic_beta)
         steps3 = IndependentVectorMetropolis(
-            variables=[alt_counts,location_indicies,tcn_var],
-            axes=[(1,),(),(1,)],
-            proposals = 
-                proposals,
-            mask =[1,0,0], t_b=thermodynamic_beta)
+            variables=[alt_counts,location_indicies],
+            axes=[(1,),()],
+            proposals = [None,CatProposal(MAX_CLUSTERS)],
+            mask=[1,0], t_b=thermodynamic_beta)
         steps4 = IndependentClusterMetropolis(
             [alt_counts], 
             [(1,)], 
@@ -332,17 +323,17 @@ def build_model(panel, tune, iter_count, trace_location, cont=False, cluster_par
             [(1,)], 
             [CatProposal(MAX_AXIS_CLUSTERS)], 
             [0], MAX_CLUSTERS, n, t_b=thermodynamic_beta)
-        steps5 = pm.step_methods.HamiltonianMC(
-            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
-            step_scale=0.002,path_length=0.02)
-        #steps5 = [pm.step_methods.Metropolis(
-            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,
-            #axis_cluster_locations,axis_dp_alpha])]*10
+        #steps5 = pm.step_methods.HamiltonianMC(
+            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
+            #step_scale=0.0002,path_length=0.003)
+        steps5 = pm.step_methods.Metropolis(
+            vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,
+            axis_dp_alpha,tcnt_precision,tumour_content],tune_interval=50)
         steps = [#steps1,
-            #steps2,
+            steps2,
             steps3,
             steps4,
-            #steps5
+            steps5
             ]
 
         for rv in bc_model.basic_RVs:
@@ -351,18 +342,20 @@ def build_model(panel, tune, iter_count, trace_location, cont=False, cluster_par
             #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
             pass
 
-        if not os.path.isdir(trace_location):
-            db = Text(trace_location)
-            trace = pm.sample(iter_count,
-                #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
-                tune=tune, n_init=10000, njobs=1, step=steps,trace=db)
-        elif cont is True:
-            trace = pm.backends.text.load(trace_location)
-            trace = pm.sample(iter_count,
-                #nuts_kwargs={"target_accept":0.90,"integrator":"two-stage","step_scale":0.03},
+        if not os.path.isfile(trace_location):
+            print("Starting sampling...")
+            trace = pm.backends.hdf5.HDF5(name=trace_location)
+            pm.sample(iter_count,
+                #nuts_kwargs={"target_accept":0.80,"max_treedepth":5},
+                tune=tune, n_init=10000, njobs=1, step=steps,trace=trace,start=start)
+        elif prev_trace is not None:
+            print("Continuing sampling...")
+            trace = prev_trace 
+            pm.sample(iter_count,
                 tune=tune, n_init=10000, njobs=1, step=steps,trace=trace)
         else:
-            trace = pm.backends.text.load(trace_location)
+            print("Reloading trace...")
+            trace = pm.backends.hdf5.load(trace_location)
         #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace
