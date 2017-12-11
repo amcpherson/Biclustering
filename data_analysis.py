@@ -7,36 +7,38 @@ import numpy as np
 import pandas as pd
 import os.path
 import sys
+import json
 
-BURNIN = 4000
-SUBSAMPLE = 50
-THRESH = 5
+def load_config(config):
+    with open(config,"r") as conf:
+        config = json.load(conf)
+    return config
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="cluster parameters")
+    args = parser.parse_args()
+
 def main():
-    path,trace_path,lichee = sys.argv[1:4]
+    path,trace_path,lichee,config_path = sys.argv[1:5]
+
+    config = load_config(config_path)
     
     panel,sample_names = parse_data(path)
-    #print((panel["major"] == 0).to_string())
     panel["major"] = panel["major"].astype(np.int64)
-    annealing_schedule = [
-        (10000,2000,1,None),
-        (1500,500,1.02,None),
-        (1500,500,1.05,None),
-        (1500,500,1.1,None),
-        (1500,500,1.2,None),
-        (1500,500,1.3,None),
-        (1500,500,10,None),
-        (1500,500,100,None),
-        (1500,500,1000,None)
-        ]
+    annealing_schedule = config["annealing_schedule"]
     trace = None
-    for tune,sample,t_b,start in annealing_schedule:
-        _,trace = inf.build_model(panel, tune, sample, trace_path, prev_trace=trace, thermodynamic_beta=t_b,start=start)
+    for tune,sample,t_b in annealing_schedule:
+        _,trace = inf.build_model(panel, tune, sample, trace_path,
+            prev_trace=trace, thermodynamic_beta=t_b, sampler=config["sampler"])
+
+    if config["run_lichee"] is False:
+        return
+        
     try:
         os.makedirs(lichee)
     except:
         pass
 
-    """
     sub_trace = trace[BURNIN::SUBSAMPLE]
     location_indicies_list = list(sub_trace["location_indicies"])
     cluster_indicies_list = list(sub_trace["cluster_indicies"])
@@ -56,13 +58,6 @@ def main():
             tree = rl.run_lichee(ssnv_input,cluster_input,output)
             count = check_lichee_output(tree)
             f.write("{}:{}:{}\n".format(index,count,max_n))
-    """
-    print("Done!")
-
-def load_prev(path,panel):
-    _,trace = inf.build_model(panel, 1, 1, path)
-    print(trace[2000])
-    return trace[2000]
 
 def check_lichee_output(tree):
     with open(tree,"r") as f:
@@ -75,7 +70,6 @@ def check_lichee_output(tree):
             count += 1
         return count
 
-
 def parse_data(path):
     """Reads a tsv file and converts it to clusterable data for
     the model.
@@ -86,7 +80,7 @@ def parse_data(path):
         (data,sample_names,node):The post processed data along with
         the names of each sample and the origin node of each data point
     """
-    df = pd.DataFrame.from_csv(path,sep='\t',index_col=None)
+    df = pd.read_csv(path,sep='\t',index_col=None)
     sample_names,sample_count = get_sample_names(df)
     df = df.set_index(["event_id","sample_id"])
     panel = df.to_panel()
@@ -113,17 +107,6 @@ def get_sample_names(df):
     return sample_names,len(sample_names)
 
 def add_column_to_panel(pn,column,data):
-    """
-    sample_names,sample_count = get_sample_names(df)
-    for i in range(sample_count):
-        try:
-            df.loc[lambda df: df.sample_id == sample_names[i],column] = data[:,i]
-        except Exception as e:
-            print(type(e))
-            df.loc[lambda df: df.sample_id == sample_names[i],column] = data[:]
-    df = df.set_index(["event_id","sample_id"])
-    pn = df.to_panel()
-    """
     if len(data.shape) == 2:
         pn[column] = data
     elif len(data.shape) == 1:
