@@ -10,16 +10,17 @@ import theano as t
 import theano.sparse.basic as sp
 from theano import tensor as tt
 from theano import printing as tp
-from pymc3 import Model,Dirichlet
+from pymc3 import Model,Dirichlet,Deterministic
+from pymc3.math import logsumexp
+from pymc3.distributions.dist_math import bound
 from pymc3.distributions.continuous import Gamma,Beta,Exponential
 from pymc3.distributions.discrete import Categorical,BetaBinomial
-from pymc3 import Deterministic
-from pymc3.backends import Text
 
 from data_generator import generate_data
 from scipy import stats
 from functools import reduce
 from pprint import pprint
+import scipy
 import seaborn as sns
 import scipy.optimize as opt
 import pickle
@@ -38,8 +39,6 @@ def preprocess_panel(panel):
     tre = get_array(panel,"total_raw_e")
     maj = get_array(panel,"major")
     tcnt = get_array(panel,"tumour_content")[1,:]
-    data = get_array(panel,"ccf")
-    vaf = get_array(panel,"vaf")
 
     #Replace uncounted mutations with a count of 1
     #Ideally we would keep a nan mask and
@@ -52,7 +51,11 @@ def preprocess_panel(panel):
 def get_array(panel, col):
     return np.array(panel[col])
 
-def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluster_params="one", thermodynamic_beta=1,start=None):
+def build_model(panel, tune, iter_count, trace_location, 
+    prev_trace=None, 
+    cluster_params="one", 
+    thermodynamic_beta=1,
+    sampler="NUTS"):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -72,19 +75,17 @@ def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluste
         (model,trace): The pymc3 model object along with the sampled trace.
 
     """
-    x = preprocess_panel(panel)
-    ref,alt,tre,tcnt,maj = x
+    ref,alt,tre,tcnt,maj = preprocess_panel(panel)
 
     n,dim = ref.shape
 
-    #TODO:Add assert statement
-    #assert(ref.shape == alt.shape,"ref and alt have different shapes!")
     bc_model = Model()
     with bc_model:
         axis_alpha = 1
         axis_beta = 1
         axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
-        cluster_dp_alpha = 1#Gamma("cluster_dp_alpha",mu=2,sd=1)
+        cluster_dp_alpha = 1
+
         #concentration parameter for the clusters
         if cluster_params == "samplecluster":
             shape = (MAX_CLUSTERS,dim)
@@ -156,29 +157,17 @@ def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluste
             elif cluster_params == "one":
                 sub_tensor = cluster_clustering
             else:
-                raise Exception("This should never happen!")
+                raise Exception("Incorrect cluster parameter argument")
 
             dispersion_factors = tt.set_subtensor(
                 dispersion_factors[:,d],
                 sub_tensor)
-
         
         dispersion = dispersion_factors
         mutation_ccf = data_expectation
-################################################################################
 
-        #Account for private mutations but we don't know wthe private mutations
-        """
-        # Neutral evolution
-        private_frac = pm.Uniform('private_frac', lower=0, upper=1., shape=len(mutation_cluster))
-        
-        mutation_ccf_2 = mutation_ccf * (
-            private_frac * is_private +
-            np.ones(len(is_private)) - is_private) # only for privates
-        """
         tcnt_precision = pm.Gamma("tcnt_precision",mu=2000,sd=2000)
 
-        mutation_ccf_2 = data_expectation 
         alt_counts = alt
         total_counts = alt+ref
         major_cn = maj
@@ -187,90 +176,47 @@ def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluste
         variable_tumour_copies = True
         max_cn = np.max(major_cn)
         cn_iterator = range(1,max_cn+1)
-        
 
+        #Account for private mutations but we don't know wthe private mutations
+        # Neutral evolution
+        test = np.vectorize(lambda x,y: (scipy.stats.binom_test(x,y,p=0.001,alternative='greater') < 0.01))
+        is_private = np.sum(test(alt_counts,total_counts),axis=1) == 1
+
+        private_frac = pm.Uniform('private_frac', lower=0, upper=1., shape=(n,dim))
+        
+        mutation_ccf_2 = (mutation_ccf * (
+            private_frac * is_private[:,np.newaxis] +
+            (1 - is_private[:,np.newaxis])))[:,:,np.newaxis] # only for privates
+        
         cn_error = 0.05#pm.Beta('cn_error',alpha=1,beta=1)
-        maj_p = np.zeros((MAX_CN,n,dim))
+        maj_p = np.zeros((n,dim,MAX_CN))
         for i in range(MAX_CN):
             cn = i+1
             array = np.zeros(MAX_CN)
             array[:cn] = 1/cn
-            maj_p[:,major_cn == cn] = array[:,np.newaxis]
+            maj_p[major_cn == cn,:] = array
             
-        p = maj_p*(1-cn_error)+np.ones((MAX_CN,n,dim))/MAX_CN*cn_error
-        tcn_var = TensorCategorical('tcn_var',shape=(n,dim),p=p)
-        tcns = pm.Deterministic('tcns',tcn_var+1)
+        p = maj_p*(1-cn_error)+np.ones((n,dim,MAX_CN))/MAX_CN*cn_error
+        tcns = np.array(range(1,MAX_CN+1))
 
-        """
-        if variable_tumour_copies:
-            mean_tumour_copies = pm.Uniform('mean_tumour_copies', lower=0, upper=1., shape=snv_count)
-            #mean_tumour_copies_v = mean_tumour_copies_v + 4.
-            mean_tumour_copies_v = mean_tumour_copies*(np.repeat(5., snv_count) - tcns) + tcns
-            #mean_tumour_copies_v = pm.Deterministic('mean_tumour_copies_v', mean_tumour_copies_v)
-            #print(mean_tumour_copies.tag.test_value)
-            #slow as molasses
-            #mean_tumour_copies_v = [pm.Uniform('mean_tumour_copies', lower=tcns[i], upper=5.) for i in range(snv_count)]
-        else:
-            #mean_tumour_copies = pm.Deterministic('mean_tumour_copies', mean_tumour_copies)
-            mean_tumour_copies_v = tre 
-        """
-        mean_tumour_copies_v = tre 
+        mean_tumour_copies = tre[:,:,np.newaxis]
         
-        #Account for normal contamination but we don't know the normal average contamination
-        """
-        average_normal_contamination = float(normal_alt_counts.sum())/float(normal_total_counts.sum())
-        
-        nalpha = average_normal_contamination * normal_dispersion
-        nbeta = (1.-average_normal_contamination) * normal_dispersion
-        
-        norm_p = pm.Beta(
-            'np', alpha=nalpha, beta=nbeta,
-            shape = len(mutation_cluster))
-        
-        norm_alt_counts = pm.Binomial(
-            'nx', n=normal_total_counts, p = norm_p,
-            observed = normal_alt_counts)
-        """
-
-        norm_p = 0
-
-        #vaf = (
-        #    mutation_ccf_2 * tcns * tumour_content / 
-        #    (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
-        
-        ## Incorporates noise from the normal. 
-        #tp.Print('vector', attrs = [ 'shape' ])(mutation_ccf_2)
-        tumour_content = tumour_content[np.newaxis,:]
+        tumour_content = tumour_content[np.newaxis,:,np.newaxis]
         vaf = (
-            (mutation_ccf_2 * tcns * tumour_content + (1-tumour_content) * norm_p * 2)/ 
-            (2 * (1 - tumour_content) + mean_tumour_copies_v * tumour_content))
+            (mutation_ccf_2 * tcns * tumour_content)/ 
+            (2 * (1 - tumour_content) + mean_tumour_copies * tumour_content))
         vaf = pm.Deterministic("vaf",vaf)
 
-        #garbage_frac = Beta("garbage_frac",alpha=1,beta=10)
-        #is_garbage = pm.Bernoulli("is_garbage",p=garbage_frac,shape=(n,))
-        #is_garbage_t = is_garbage[:,np.newaxis]
+        alpha = vaf * dispersion[:,:,np.newaxis]
+        beta = (1 - vaf) * dispersion[:,:,np.newaxis]
 
-        alpha = vaf * dispersion #* (1 - is_garbage_t) + is_garbage_t
-        beta = (1 - vaf) * dispersion #* (1 - is_garbage_t) + is_garbage_t
-
-        alt_counts = pm.BetaBinomial(
-            'x', alpha=alpha, beta=beta,
-            n=total_counts, observed=alt_counts)
-
-################################################################################
-        #t = tre
-        #c = Categorical("tumour_copies",shape=(n,dim),p=np.array([0.33, 0.33, 0.34])) + 1
-        #c = 2#<-- TODO REMOVE LATER!!!
-
-        #vaf = data_expectation * c * tcnt / (2 * (1 - tcnt) + tre * tcnt)
-        #Deterministic("vaf",vaf)
-
-        #a=vaf*cluster_clustering
-        #b=(1-vaf)*cluster_clustering
-
-        #x = BetaBinomial("x",alpha=a,beta=b,n=alt+ref,observed=alt)
-
-################################################################################
+        alt_count_components = pm.BetaBinomial.dist(alpha=alpha, beta=beta,
+            n=total_counts[:,:,np.newaxis],shape=(n,dim,MAX_CN))
+        alt_counts = pm.Mixture('x',w=p,comp_dists=alt_count_components,observed=alt_counts[:,:,np.newaxis],shape=(n,dim,1))
+        #Properly define logp_elemwiset for a mixture distribution
+        dist = alt_counts.distribution
+        comp_log_prob = tt.switch(vaf >= 1,-1e5,dist._comp_logp(alt_counts))
+        alt_counts.logp_elemwiset = logsumexp(tt.log(dist.w)+comp_log_prob,axis=-1)
 
         #Log useful information
         Deterministic("f_expected", data_expectation)
@@ -280,74 +226,54 @@ def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluste
         Deterministic("logP",bc_model.logpt)
         Deterministic("model_evidence", alt_counts.logpt)
 
-        pm.Potential("chill_factor",bc_model.logpt*(thermodynamic_beta-1))
+        pm.Potential("extra_potential",bc_model.logpt*(thermodynamic_beta-1))
 
-        #assign lower step methods for the sampler
-        #steps1 = pm.CategoricalGibbsMetropolis(vars=tcn_vars, proposal='uniform')
-        #steps1 = pm.Metropolis(vars=tcn_vars, proposal='uniform')
         """
-        if variable_tumour_copies:
-            steps2 = pm.step_methods.HamiltonianMC(vars=[
-                #b, 
-                #frac, 
-                #private_frac,
-                mean_tumour_copies,
-                #norm_p,
-                ], step_scale=0.002, path_length=0.2)
-        else:
-            steps2 = pm.step_methods.HamiltonianMC(vars=[
-                #b, 
-                #frac, 
-                #private_frac, 
-                #norm_p
-                ], 
-                step_scale=0.002, path_length=0.2)
-        """
-
-        
-        steps2 = IndependentVectorMetropolis(
+        steps1 = IndependentVectorMetropolis(
             variables=[alt_counts,tcn_var],
             axes=[(),()],
             proposals = [None,CatProposal(MAX_CN)],
-            mask=[1,0], t_b=thermodynamic_beta)
-        steps3 = IndependentVectorMetropolis(
+            mask=[1,0], t_b=1)#t_b=thermodynamic_beta)
+        """
+        steps2 = IndependentVectorMetropolis(
             variables=[alt_counts,location_indicies],
-            axes=[(1,),()],
+            axes=[(1,2),()],
             proposals = [None,CatProposal(MAX_CLUSTERS)],
             mask=[1,0], t_b=thermodynamic_beta)
-        steps4 = IndependentClusterMetropolis(
+        steps3 = IndependentClusterMetropolis(
             [alt_counts], 
-            [(1,)], 
+            [(1,2)], 
             location_indicies, 
             [cluster_indicies], 
             [(1,)], 
             [CatProposal(MAX_AXIS_CLUSTERS)], 
             [0], MAX_CLUSTERS, n, t_b=thermodynamic_beta)
-        #steps5 = pm.step_methods.HamiltonianMC(
-            #vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,axis_dp_alpha,tcnt_precision,tumour_content],
-            #step_scale=0.0002,path_length=0.003)
-        steps5 = pm.step_methods.Metropolis(
+        steps4 = pm.step_methods.Metropolis(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,
-            axis_dp_alpha,tcnt_precision,tumour_content],tune_interval=50)
-        steps = [#steps1,
-            steps2,
-            steps3,
-            steps4,
-            steps5
-            ]
+            axis_dp_alpha,tcnt_precision,tumour_content,private_frac],tune_interval=50)
 
-        for rv in bc_model.basic_RVs:
-            #print(rv.name, rv.logp(bc_model.test_point))
-            #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
-            #pprint(bc_model.named_vars["tcns"].tag.test_value)#[32])
-            pass
+        if sampler == "NUTS":
+            steps = [
+                #steps1,
+                steps2,
+                steps3
+                ]*5
+        elif samper == "Metropolis":
+            steps = [
+                #steps1,
+                steps2,
+                steps3,
+                steps4
+                ]
+        else:
+            raise ValueError("Invalid sampler")
 
         if not os.path.isfile(trace_location):
             print("Starting sampling...")
             trace = pm.backends.hdf5.HDF5(name=trace_location)
             pm.sample(iter_count,
                 #nuts_kwargs={"target_accept":0.80,"max_treedepth":5},
-                tune=tune, n_init=10000, njobs=1, step=steps,trace=trace,start=start)
+                tune=tune, n_init=10000, njobs=1, step=steps,trace=trace)
         elif prev_trace is not None:
             print("Continuing sampling...")
             trace = prev_trace 
@@ -356,7 +282,6 @@ def build_model(panel, tune, iter_count, trace_location, prev_trace=None, cluste
         else:
             print("Reloading trace...")
             trace = pm.backends.hdf5.load(trace_location)
-        #trace = pm.sample(iter_count,start=start,init=None,nuts_kwargs={"target_accept":0.9},tune=500,n_init=10000, njobs=1,step=steps)#,trace=db)
 
     return bc_model, trace
 
@@ -365,8 +290,6 @@ class CatProposal:
         self.k = k
     def __call__(self,x):
         return np.random.choice(self.k,size = x.shape)
-        
-    
 
 class TensorCategorical(pm.Discrete):
     def __init__(self, p, *args, **kwargs):
@@ -518,42 +441,12 @@ class IndependentClusterMetropolis(IndependentVectorMetropolis):
         output = tt.squeeze(out_matrix)
         return output
 
-def plot_hard_clustering(model, trace, data, truth=None):
-    """Plot the hard clustering generated by the MAP estimate of the trace
-    along with the true clustering of the data.
-    
-    Takes N dimesensional data, a model, a trace,and the
-    true data generating parameters to produce 2 N by N grids of 
-    2D plots showing a scatter plot along each pair of axes.
-
-    Args:
-        model:the model of the data
-        trace:trace generated by sampling from the model
-        data:the ground truth data used to train the model
-        truth:the ground truth of the latent variables that
-        generated the data. Must contain a "location_indicies"
-        index with the data's true clustering
-    Returns:
-        None
-
-    """
-    #extract true indicies and extra indicies
-    is_truth = truth is not None
-    indicies = get_map_item(model, trace, "location_indicies")
-    if is_truth:
-        true_indicies = truth["location_indicies"]
-
-    g = gen_plot(data, 'CLUSTERING', indicies)
-    
-    if is_truth:
-        h = gen_plot(data, 'GROUND TRUTH', true_indicies)
-
-def show_plots():
-    mpld3.show()
+def plot_clustering(model, trace, panel):
+    pass
 
 def get_map_item(model, trace, index):
     """Aquire the MAP estimate of the value
-    of a variable in a model.
+    of a variable in a trace.
 
     Args:
         model:the model of the data
@@ -567,158 +460,6 @@ def get_map_item(model, trace, index):
         item = trace[index][map_index]
     return item
 
-def compute_cluster_means(data, clustering, cluster_names):
-    """Compute the cluster means of some data.
-    """
-    cluster_count = len(cluster_names)
-    dim = data.shape[1]
-    cluster_means = np.ndarray((cluster_count,dim), dtype=np.float32)
-    for i in range(cluster_count):
-        cluster_means[i,:] = np.mean(np.squeeze(data[np.where(clustering==cluster_names[i]),:]), axis=0)
-    return cluster_means
 
 
-def gen_plot(data, subtitle, indicies):
-    """Generates a grid plot with a given
-    subtitle with coloring specified by 
-    indicies"""
-    def cluster_plot(x,y,**kwargs):
-        sns.set_style('whitegrid')
-        #sns.plt.ylim(0,3)
-        #sns.plt.xlim(0,3)
-        plt.scatter(x,y,**kwargs)
 
-    df = pd.DataFrame(data)
-    dim = data.shape[1]
-    df = df.assign(location_indicies = indicies)
-    g = sns.PairGrid(df, hue="location_indicies",vars=range(dim))
-    g.fig.suptitle(subtitle)
-    g.map_lower(cluster_plot)
-    g.map_diag(plt.hist)
-    g.add_legend(fontsize=14)
-    return g
-
-def plot_axis(model, trace):
-    pass
-
-def plot_cluster_means(data, clustering, subtitle):
-    """Plots cluster means of a given dataset with a
-    given clustering"""
-    indicies = list(set(clustering))
-    cluster_means = compute_cluster_means(data, clustering, indicies)
-    gen_plot(cluster_means, subtitle, indicies)
-
-
-def display_map_axis_mapping(model, trace):
-    """Creates a lookup table showing each cluster and which cluster
-    means are used for each dimension."""
-    mapping = get_map_item(model, trace, "cluster_indicies")
-    print(pd.DataFrame(mapping))
-    fig, ax = plt.subplots(1)
-    ax.table(cellText=mapping, fontsize=10, rowLabels=range(MAX_CLUSTERS), loc='center', bbox=[0.1, 0.1, 0.9, 0.9])
-    ax.get_xaxis().set_visible(False)
-    ax.get_yaxis().set_visible(False)
-
-
-def plot_ppd(model, trace, data):
-    """Plot the posterior predictive distribution over the data.
-    
-    Takes N dimesensional data, a model, and a trace to produce 
-    An N by N grid of 2d plots. Showing a scatter plot along each pair
-    of axes.
-
-    Args:
-        model:the model of the data
-        trace:trace generated by sampling from the model
-        data:the ground truth data used to train the model
-    Returns:
-        None
-
-    """
-    n_predictions = 1000    
-    burn_in = 500
-    
-    #generate array of predictions
-    with model:
-        samples = pm.sample_ppc(trace)
-    predictions = samples["data"]
-    predictions = predictions[burn_in:,:,:]
-    t,n,d = predictions.shape
-    predictions = np.reshape(predictions, (t*n,d))
-
-    #grab a random sample of predictions
-    np.random.shuffle(predictions)
-    predictions = predictions[:n_predictions,:]
-
-    def ppd_plot(x, y, **kwargs):
-        """Plots kde if kwargs[source]="s" 
-            or a scatter plot if kwargs[source]="o" """
-        source = kwargs["source"]
-        del kwargs["source"]
-        sns.set_style('whitegrid')
-        sns.plt.ylim(0,1)
-        sns.plt.xlim(0,1)
-        if source == "s":
-            kwargs["cmap"] = "Oranges"
-            sns.kdeplot(x, y, n_levels=20, **kwargs)
-            #plt.scatter(x,y,**kwargs)
-        elif source == "o":
-            kwargs["cmap"] = "Blues"
-            plt.scatter(x, y, **kwargs)
-     
-    df_predictive = pd.DataFrame(predictions)
-    df_predictive = df_predictive.assign(source= lambda x: "s")
-    df_observed = pd.DataFrame(data)
-    df_observed = df_observed.assign(source= lambda x: "o")
-    #merge observed and predicted data into one dataframe
-    #and distinguishg them by the value of the "source" column
-    df = pd.concat([df_predictive,df_observed],ignore_index=True)
-    
-    #Map ppd_plot onto the data in a pair grid to visualize predictive density 
-    g = sns.PairGrid(df,hue="source", hue_order=["s","o"], hue_kws={"source":["s","o"]})
-    g.map_offdiag(ppd_plot)
-    plt.show()
-    
-    
-
-def plot_max_n(trace, n, last, spacing):
-    """Plot the first 2 dimensions of position of the 
-    largest n cluster means in a 2 dimensional data set.
-
-    Args:
-        trace:trace generated by sampling from the model
-        last:the last n draws to plot from the trace
-        spacing:the spacing between trace samples
-    Returns:
-        None
-
-    """
-    cl = trace["cluster_locations"]
-    cm = trace["cluster_magnitudes"]
-    print(cl)
-
-    #find indicies of the largest clusters
-    sort = np.argsort(cm,axis=1)
-    #biggest cluster
-    for i in range(n):
-        indicies = sort[-last::spacing,i]
-        values = cl[-last::spacing,indicies,:]
-        sns.set_style('whitegrid')
-        sns.plt.ylim(0,1)
-        sns.plt.xlim(0,1)
-        sns.kdeplot(values[:,0],values[:,0], bw='scott')
-
-def main():
-    """Generates sample data, clusters it, and plots
-    the resulting clustering along with the ground truth.
-    """
-    print("START")
-    data,state = generate_data()
-    #model,trace = build_model(data,start=state)
-    model,trace = build_model(data, start=None)
-    #plot_ppd(model,trace,data)
-    plot_hard_clustering(model, trace, data, state)
-    print("DONE")
-
-if __name__=="__main__":
-    main()
