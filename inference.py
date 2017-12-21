@@ -44,7 +44,6 @@ def preprocess_panel(panel):
     #Ideally we would keep a nan mask and
     #Infer the unobserved datapoints
     ref[np.where(ref+alt == 0)] = 1
-    #ref[np.where(np.logical_not((np.isfinite(data))))] = 0
 
     return ref,alt,tre,tcnt,maj
 
@@ -55,7 +54,8 @@ def build_model(panel, tune, iter_count, trace_location,
     prev_trace=None, 
     cluster_params="one", 
     thermodynamic_beta=1,
-    sampler="NUTS"):
+    sampler="NUTS",
+    infer_cn_error=False):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -68,11 +68,19 @@ def build_model(panel, tune, iter_count, trace_location,
     distribuiton over datapoints. 
 
     Args:
-        data:the ground truth data used to train the model
-        iter_count
-        start:The starting point for the markov chains
+        panel: a pandas panel with reference counts, alternate counts, tumour content,
+            major copy number and mean tumour copy number
+        tune: number of steps to tune the samplers
+        iter_count: number of steps to sample from the sampler
+        trace_location: path to the current hd5 trace
+        prev_trace: A previous pymc3 hd5 trace object
+        cluster_params: The number of clustering parameters
+        thermodynamic_beta: the inverse sampling temperature of the system higher values
+        bias the likelyhood toward points in the space with higher likelyhoods
+        sampler: Which kind of sampler to use for the continous variables
+        infer_cn_error: wheter or not to infer the number of incorrect tumour copy number calls
     Returns:
-        (model,trace): The pymc3 model object along with the sampled trace.
+        (model,trace): The pymc3 model object along with the sampled trace object.
 
     """
     ref,alt,tre,tcnt,maj = preprocess_panel(panel)
@@ -81,8 +89,17 @@ def build_model(panel, tune, iter_count, trace_location,
 
     bc_model = Model()
     with bc_model:
+        
+        #Parameters of the per sample prior distribution over cluster 
+        #locations
+        #both are set to 1 to give a uniform distribution over
+        #the space 
         axis_alpha = 1
         axis_beta = 1
+
+        #Alpha parameters of all dp's alpha
+        #The model is relatively insensitive to these parameters as
+        #the amount of data increases
         axis_dp_alpha = Gamma("axis_dp_alpha", mu=1, sd=1)
         cluster_dp_alpha = 1
 
@@ -94,14 +111,14 @@ def build_model(panel, tune, iter_count, trace_location,
         elif cluster_params == "one":
             shape = ()
         else:
-            raise Exception("invalid clustering")
+            raise ValueError("invalid cluster parameters")
 
+        #Concentration parameter for all clusters
         cluster_clustering = Gamma("cluster_clustering", mu=500., sd=250,shape=shape)
         #cluster_sd = Gamma("cluster_std_dev",mu=0.15,sd=0.04)#0.2
 
         #per axis DP
         axis_dp_betas = Beta("axis_dp_betas", alpha=1, beta=axis_dp_alpha, shape=(dim,MAX_AXIS_CLUSTERS))
-
         axis_cluster_magnitudes = tt.extra_ops.cumprod(1-axis_dp_betas, axis=1)
 
         # Shift
@@ -142,6 +159,7 @@ def build_model(panel, tune, iter_count, trace_location,
                 cluster_locations[:,d],
                 axis_cluster_locations[d,cluster_indicies[:,d]])
 
+        #Assign per datapoint expected values and clustering parameters
         data_expectation = tt.zeros((n,dim))
         dispersion_factors = tt.zeros((n,dim))
         location_indicies = Categorical("location_indicies", shape=(n), p=cluster_magnitudes)
@@ -166,29 +184,44 @@ def build_model(panel, tune, iter_count, trace_location,
         dispersion = dispersion_factors
         mutation_ccf = data_expectation
 
-        tcnt_precision = pm.Gamma("tcnt_precision",mu=2000,sd=2000)
 
+        #TODO: bring variables from  allens likelyhood under 
         alt_counts = alt
         total_counts = alt+ref
         major_cn = maj
         snv_count = len(major_cn)
-        tumour_content = pm.Beta("tumour_content",alpha=tcnt*tcnt_precision,beta=(1-tcnt)*tcnt_precision,shape=(dim,))
         variable_tumour_copies = True
         max_cn = np.max(major_cn)
         cn_iterator = range(1,max_cn+1)
 
+        #Uncertainty in tumour content, values were set under the assumption that
+        #The reported tumour content is mostly correct
+        tcnt_precision = pm.Gamma("tcnt_precision",mu=2000,sd=2000)
+        tumour_content = pm.Beta("tumour_content",alpha=tcnt*tcnt_precision,beta=(1-tcnt)*tcnt_precision,shape=(dim,))
+
         #Account for private mutations but we don't know wthe private mutations
         # Neutral evolution
+
+        #Check to see if a mutation is private
         test = np.vectorize(lambda x,y: (scipy.stats.binom_test(x,y,p=0.001,alternative='greater') < 0.01))
         is_private = np.sum(test(alt_counts,total_counts),axis=1) == 1
 
+        #Account for private mutations but we don't know wthe private mutations
+        # Neutral evolution
         private_frac = pm.Uniform('private_frac', lower=0, upper=1., shape=(n,dim))
         
+        #assign a uniform probability to all private mutations, independent of their clustering
         mutation_ccf_2 = (mutation_ccf * (
             private_frac * is_private[:,np.newaxis] +
-            (1 - is_private[:,np.newaxis])))[:,:,np.newaxis] # only for privates
+            (1 - is_private[:,np.newaxis])))[:,:,np.newaxis]
         
-        cn_error = 0.05#pm.Beta('cn_error',alpha=1,beta=1)
+        if infer_cn_error is False:
+            cn_error = 0.05
+        else:
+            cn_error = pm.Beta('cn_error',alpha=1,beta=1)
+
+
+        #Place probabilty distribution over mutation copy number
         maj_p = np.zeros((n,dim,MAX_CN))
         for i in range(MAX_CN):
             cn = i+1
@@ -199,8 +232,9 @@ def build_model(panel, tune, iter_count, trace_location,
         p = maj_p*(1-cn_error)+np.ones((n,dim,MAX_CN))/MAX_CN*cn_error
         tcns = np.array(range(1,MAX_CN+1))
 
-        mean_tumour_copies = tre[:,:,np.newaxis]
         
+        #Assign expected vaf to each data_point
+        mean_tumour_copies = tre[:,:,np.newaxis]
         tumour_content = tumour_content[np.newaxis,:,np.newaxis]
         vaf = (
             (mutation_ccf_2 * tcns * tumour_content)/ 
@@ -224,23 +258,21 @@ def build_model(panel, tune, iter_count, trace_location,
         Deterministic("cluster_magnitudes", cluster_magnitudes)
         Deterministic("axis_cluster_magnitudes",axis_cluster_magnitudes)
         Deterministic("logP",bc_model.logpt)
+
+        #TODO: Determine why this isn't getting logged in the trace after upgrading
+        #to pymc3 3.2
         Deterministic("model_evidence", alt_counts.logpt)
 
+        #Potential correction factor for simulated annealing
         pm.Potential("extra_potential",bc_model.logpt*(thermodynamic_beta-1))
 
-        """
+        #Assign step methods for all variables
         steps1 = IndependentVectorMetropolis(
-            variables=[alt_counts,tcn_var],
-            axes=[(),()],
-            proposals = [None,CatProposal(MAX_CN)],
-            mask=[1,0], t_b=1)#t_b=thermodynamic_beta)
-        """
-        steps2 = IndependentVectorMetropolis(
             variables=[alt_counts,location_indicies],
             axes=[(1,2),()],
             proposals = [None,CatProposal(MAX_CLUSTERS)],
             mask=[1,0], t_b=thermodynamic_beta)
-        steps3 = IndependentClusterMetropolis(
+        steps2 = IndependentClusterMetropolis(
             [alt_counts], 
             [(1,2)], 
             location_indicies, 
@@ -248,44 +280,51 @@ def build_model(panel, tune, iter_count, trace_location,
             [(1,)], 
             [CatProposal(MAX_AXIS_CLUSTERS)], 
             [0], MAX_CLUSTERS, n, t_b=thermodynamic_beta)
-        steps4 = pm.step_methods.Metropolis(
+        steps3 = pm.step_methods.Metropolis(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,
             axis_dp_alpha,tcnt_precision,tumour_content,private_frac],tune_interval=50)
 
         if sampler == "NUTS":
+            #Multiplication by 5 to partialy account for MH sampling inefficiency
             steps = [
-                #steps1,
-                steps2,
-                steps3
+                steps1,
+                steps2
                 ]*5
         elif samper == "Metropolis":
             steps = [
-                #steps1,
+                steps1,
                 steps2,
-                steps3,
-                steps4
+                steps3
                 ]
         else:
             raise ValueError("Invalid sampler")
 
+        #Create trace object
         if not os.path.isfile(trace_location):
+            #If no trace is already present create the trace
             print("Starting sampling...")
             trace = pm.backends.hdf5.HDF5(name=trace_location)
             pm.sample(iter_count,
                 #nuts_kwargs={"target_accept":0.80,"max_treedepth":5},
                 tune=tune, n_init=10000, njobs=1, step=steps,trace=trace)
         elif prev_trace is not None:
+            #If trace is present and a previous trace object is already given
+            #Append the current run to the trace object
             print("Continuing sampling...")
             trace = prev_trace 
+            #TODO: With hd5 traces, this operation is extremely memory inefficient
             pm.sample(iter_count,
                 tune=tune, n_init=10000, njobs=1, step=steps,trace=trace)
         else:
+            #If trace is present and a previous trace object is not given then
+            #Reload the trace object as a multitrace for postprocessing
             print("Reloading trace...")
             trace = pm.backends.hdf5.load(trace_location)
 
     return bc_model, trace
 
 class CatProposal:
+    """Categorical proposal distribution object"""
     def __init__(self,k):
         self.k = k
     def __call__(self,x):
