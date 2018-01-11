@@ -1,0 +1,15 @@
+data,trace,lichee,config,script
+data/wgs/patient_1.tsv,traces/wgs/trace_1.hd5,lichee/patient_1,config.json,scripts/patient_1.sh
+data/wgs/patient_2.tsv,traces/wgs/trace_2.hd5,lichee/patient_2,config.json,scripts/patient_2.sh
+data/wgs/patient_3.tsv,traces/wgs/trace_3.hd5,lichee/patient_3,config.json,scripts/patient_3.sh
+data/wgs/patient_4.tsv,traces/wgs/trace_4.hd5,lichee/patient_4,config.json,scripts/patient_4.sh
+data/wgs/patient_7.tsv,traces/wgs/trace_7.hd5,lichee/patient_7,config.json,scripts/patient_7.sh
+data/wgs/patient_9.tsv,traces/wgs/trace_9.hd5,lichee/patient_9,config.json,scripts/patient_9.sh
+data/wgs/patient_10.tsv,traces/wgs/trace_10.hd5,lichee/patient_10,config.json,scripts/patient_10.sh
+data/wgs/patient_11.tsv,traces/wgs/trace_11.hd5,lichee/patient_11,config.json,scripts/patient_11.sh
+data/wgs/patient_12.tsv,traces/wgs/trace_12.hd5,lichee/patient_12,config.json,scripts/patient_12.sh
+data/wgs/patient_13.tsv,traces/wgs/trace_13.hd5,lichee/patient_13,config.json,scripts/patient_13.sh
+data/wgs/patient_14.tsv,traces/wgs/trace_14.hd5,lichee/patient_14,config.json,scripts/patient_14.sh
+data/wgs/patient_15.tsv,traces/wgs/trace_15.hd5,lichee/patient_15,config.json,scripts/patient_15.sh
+data/wgs/patient_16.tsv,traces/wgs/trace_16.hd5,lichee/patient_16,config.json,scripts/patient_16.sh
+data/wgs/patient_17.tsv,traces/wgs/trace_17.hd5,lichee/patient_17,config.json,scripts/patient_17.sh

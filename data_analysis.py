@@ -29,9 +29,10 @@ def main():
     trace = None
     for tune,sample,t_b in annealing_schedule:
         _,trace = inf.build_model(panel, tune, sample, trace_path,
-            prev_trace=trace, thermodynamic_beta=t_b, sampler=config["sampler"])
+            prev_trace=trace, thermodynamic_beta=t_b, sampler=config["sampler"],
+            marg_tcn=config["marg_tcn"])
 
-    if config["run_lichee"] is False:
+    if config["lichee"] is False:
         return
         
     try:

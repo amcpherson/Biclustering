@@ -55,7 +55,8 @@ def build_model(panel, tune, iter_count, trace_location,
     cluster_params="one", 
     thermodynamic_beta=1,
     sampler="NUTS",
-    infer_cn_error=False):
+    infer_cn_error=False,
+    marg_tcn=False):
     """Returns a model of the data along with samples from it's posterior.
     
     Creates a pymc3 model object that represents a heirachical dirchelet 
@@ -190,7 +191,6 @@ def build_model(panel, tune, iter_count, trace_location,
         total_counts = alt+ref
         major_cn = maj
         snv_count = len(major_cn)
-        variable_tumour_copies = True
         max_cn = np.max(major_cn)
         cn_iterator = range(1,max_cn+1)
 
@@ -213,7 +213,7 @@ def build_model(panel, tune, iter_count, trace_location,
         #assign a uniform probability to all private mutations, independent of their clustering
         mutation_ccf_2 = (mutation_ccf * (
             private_frac * is_private[:,np.newaxis] +
-            (1 - is_private[:,np.newaxis])))[:,:,np.newaxis]
+            (1 - is_private[:,np.newaxis])))
         
         if infer_cn_error is False:
             cn_error = 0.05
@@ -221,7 +221,6 @@ def build_model(panel, tune, iter_count, trace_location,
             cn_error = pm.Beta('cn_error',alpha=1,beta=1)
 
 
-        #Place probabilty distribution over mutation copy number
         maj_p = np.zeros((n,dim,MAX_CN))
         for i in range(MAX_CN):
             cn = i+1
@@ -230,27 +229,75 @@ def build_model(panel, tune, iter_count, trace_location,
             maj_p[major_cn == cn,:] = array
             
         p = maj_p*(1-cn_error)+np.ones((n,dim,MAX_CN))/MAX_CN*cn_error
-        tcns = np.array(range(1,MAX_CN+1))
 
-        
         #Assign expected vaf to each data_point
-        mean_tumour_copies = tre[:,:,np.newaxis]
-        tumour_content = tumour_content[np.newaxis,:,np.newaxis]
-        vaf = (
-            (mutation_ccf_2 * tcns * tumour_content)/ 
-            (2 * (1 - tumour_content) + mean_tumour_copies * tumour_content))
-        vaf = pm.Deterministic("vaf",vaf)
+        if marg_tcn==True:
+            maj_p = np.zeros((n,dim,MAX_CN))
+            for i in range(MAX_CN):
+                cn = i+1
+                array = np.zeros(MAX_CN)
+                array[:cn] = 1/cn
+                maj_p[major_cn == cn,:] = array
+                
+            p = maj_p*(1-cn_error)+np.ones((n,dim,MAX_CN))/MAX_CN*cn_error
 
-        alpha = vaf * dispersion[:,:,np.newaxis]
-        beta = (1 - vaf) * dispersion[:,:,np.newaxis]
+            tcns = np.array(range(1,MAX_CN+1))
 
-        alt_count_components = pm.BetaBinomial.dist(alpha=alpha, beta=beta,
-            n=total_counts[:,:,np.newaxis],shape=(n,dim,MAX_CN))
-        alt_counts = pm.Mixture('x',w=p,comp_dists=alt_count_components,observed=alt_counts[:,:,np.newaxis],shape=(n,dim,1))
-        #Properly define logp_elemwiset for a mixture distribution
-        dist = alt_counts.distribution
-        comp_log_prob = tt.switch(vaf >= 1,-1e5,dist._comp_logp(alt_counts))
-        alt_counts.logp_elemwiset = logsumexp(tt.log(dist.w)+comp_log_prob,axis=-1)
+            mean_tumour_copies = tre[:,:,np.newaxis]
+            tumour_content = tumour_content[np.newaxis,:,np.newaxis]
+            vaf = (
+                (mutation_ccf_2[:,:,np.newaxis] * tcns * tumour_content)/ 
+                (2 * (1 - tumour_content) + mean_tumour_copies * tumour_content))
+            vaf = pm.Deterministic("vaf",vaf)
+
+            alpha = vaf * dispersion[:,:,np.newaxis]
+            beta = (1 - vaf) * dispersion[:,:,np.newaxis]
+
+            alt_count_components = pm.BetaBinomial.dist(alpha=alpha, beta=beta,
+                n=total_counts[:,:,np.newaxis],shape=(n,dim,MAX_CN))
+            alt_counts = pm.Mixture('x',w=p,comp_dists=alt_count_components,observed=alt_counts[:,:,np.newaxis],shape=(n,dim,1))
+            #Properly define logp_elemwiset for a mixture distribution
+            dist = alt_counts.distribution
+            comp_log_prob = tt.switch(vaf >= 1,-1e5,dist._comp_logp(alt_counts))
+            alt_counts.logp_elemwiset = logsumexp(tt.log(dist.w)+comp_log_prob,axis=-1)
+            steps0 = []
+            alt_counts_axes = (1,2)
+        else:
+            maj_p = np.zeros((MAX_CN,n,dim))
+            for i in range(MAX_CN):
+                cn = i+1
+                array = np.zeros(MAX_CN)
+                array[:cn] = 1/cn
+                maj_p[:,major_cn == cn] = array[:,np.newaxis]
+                
+            p = maj_p*(1-cn_error)+np.ones((MAX_CN,n,dim))/MAX_CN*cn_error
+
+            tcn_var = TensorCategorical('tcn_var',shape=(n,dim),p=p)
+            #tp.Print('vector', attrs = [ 'shape' ])(tcn_var)
+            tcns = pm.Deterministic('tcns',tcn_var+1)
+
+            mean_tumour_copies = tre
+            tumour_content = tumour_content[np.newaxis,:]
+
+            #tp.Print('vector', attrs = [ 'shape' ])(tumour_content)
+            vaf = (
+                (mutation_ccf_2 * tcns * tumour_content)/ 
+                (2 * (1 - tumour_content) + mean_tumour_copies * tumour_content))
+            vaf = pm.Deterministic("vaf",vaf)
+
+            alpha = vaf * dispersion
+            beta = (1 - vaf) * dispersion
+
+            alt_counts = pm.BetaBinomial('x', 
+                alpha=alpha, beta=beta,
+                n=total_counts, observed=alt_counts)
+
+            steps0 = [IndependentVectorMetropolis(
+                variables=[alt_counts,tcn_var],
+                axes=[(),()],
+                proposals = [None,CatProposal(MAX_CN)],
+                mask=[1,0], t_b=thermodynamic_beta)]
+            alt_counts_axes = (1,)
 
         #Log useful information
         Deterministic("f_expected", data_expectation)
@@ -266,15 +313,16 @@ def build_model(panel, tune, iter_count, trace_location,
         #Potential correction factor for simulated annealing
         pm.Potential("extra_potential",bc_model.logpt*(thermodynamic_beta-1))
 
+        #tp.Print('vector', attrs = [ 'shape' ])(alt_counts)
         #Assign step methods for all variables
         steps1 = IndependentVectorMetropolis(
             variables=[alt_counts,location_indicies],
-            axes=[(1,2),()],
+            axes=[alt_counts_axes,()],
             proposals = [None,CatProposal(MAX_CLUSTERS)],
             mask=[1,0], t_b=thermodynamic_beta)
         steps2 = IndependentClusterMetropolis(
             [alt_counts], 
-            [(1,2)], 
+            [alt_counts_axes], 
             location_indicies, 
             [cluster_indicies], 
             [(1,)], 
@@ -283,15 +331,21 @@ def build_model(panel, tune, iter_count, trace_location,
         steps3 = pm.step_methods.Metropolis(
             vars=[cluster_clustering,axis_dp_betas,cluster_betas,axis_cluster_locations,
             axis_dp_alpha,tcnt_precision,tumour_content,private_frac],tune_interval=50)
+        
+        #use these to debug Bad initial energy errors:
+        for rv in bc_model.basic_RVs:
+            #print(rv.name, rv.logp(bc_model.test_point))
+            #pprint(bc_model.named_vars["vaf"].tag.test_value)#[32])
+            pass
 
         if sampler == "NUTS":
             #Multiplication by 5 to partialy account for MH sampling inefficiency
-            steps = [
+            steps = steps0+[
                 steps1,
                 steps2
                 ]*5
         elif samper == "Metropolis":
-            steps = [
+            steps = steps0+[
                 steps1,
                 steps2,
                 steps3
